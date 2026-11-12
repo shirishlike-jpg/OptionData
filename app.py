@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,7 +7,7 @@ import time
 import math
 import re
 
-from datetime import datetime, date, time as dt_time
+from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 from html.parser import HTMLParser
 from urllib.parse import urljoin
@@ -25,10 +26,7 @@ st.set_page_config(
 class RBIYieldFetcher:
 
     BASE_URL = "https://www.rbi.org.in"
-
-    LIST_URL = (
-        "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx"
-    )
+    LIST_URL = "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx"
 
     HEADERS = {
         "User-Agent": (
@@ -48,31 +46,19 @@ class RBIYieldFetcher:
             self.current_text = []
 
         def handle_starttag(self, tag, attrs):
-
             if tag.lower() == "a":
-
                 attrs = dict(attrs)
-
                 self.current_href = attrs.get("href")
                 self.current_text = []
 
         def handle_data(self, data):
-
             if self.current_href:
                 self.current_text.append(data)
 
         def handle_endtag(self, tag):
-
             if tag.lower() == "a" and self.current_href:
-
-                text_value = " ".join(
-                    self.current_text
-                ).strip()
-
-                self.links.append(
-                    (text_value, self.current_href)
-                )
-
+                text_value = " ".join(self.current_text).strip()
+                self.links.append((text_value, self.current_href))
                 self.current_href = None
                 self.current_text = []
 
@@ -100,7 +86,6 @@ class RBIYieldFetcher:
     def parse_yield(html):
 
         text, _ = RBIYieldFetcher.get_page_text(html)
-
         text = re.sub(r"\s+", " ", text)
 
         date_match = re.search(
@@ -112,14 +97,11 @@ class RBIYieldFetcher:
         if not date_match:
             return None
 
-        date_text = date_match.group(1)
-
         try:
             yield_date = datetime.strptime(
-                date_text,
+                date_match.group(1),
                 "%b %d, %Y"
             ).date()
-
         except ValueError:
             return None
 
@@ -132,9 +114,7 @@ class RBIYieldFetcher:
         if not section_match:
             return None
 
-        yield_value = float(
-            section_match.group(1)
-        )
+        yield_value = float(section_match.group(1))
 
         if not (0 < yield_value < 30):
             return None
@@ -150,21 +130,15 @@ class RBIYieldFetcher:
     def get_latest_yield():
 
         session = requests.Session()
-
-        session.headers.update(
-            RBIYieldFetcher.HEADERS
-        )
+        session.headers.update(RBIYieldFetcher.HEADERS)
 
         response = session.get(
             RBIYieldFetcher.LIST_URL,
             timeout=20
         )
-
         response.raise_for_status()
 
-        _, links = RBIYieldFetcher.get_page_text(
-            response.text
-        )
+        _, links = RBIYieldFetcher.get_page_text(response.text)
 
         candidates = []
 
@@ -191,7 +165,6 @@ class RBIYieldFetcher:
                     candidates.append(full_url)
 
         if not candidates:
-
             raise ValueError(
                 "RBI Press Release मधून T-Bill Auction Result link मिळाली नाही."
             )
@@ -199,12 +172,10 @@ class RBIYieldFetcher:
         for page_url in candidates[:15]:
 
             try:
-
                 page_response = session.get(
                     page_url,
                     timeout=20
                 )
-
                 page_response.raise_for_status()
 
                 result = RBIYieldFetcher.parse_yield(
@@ -230,14 +201,12 @@ class BlackScholes:
 
     @staticmethod
     def normal_cdf(x):
-
         return 0.5 * (
             1 + math.erf(x / math.sqrt(2))
         )
 
     @staticmethod
     def normal_pdf(x):
-
         return (
             math.exp(-0.5 * x * x)
             / math.sqrt(2 * math.pi)
@@ -285,14 +254,9 @@ class BlackScholes:
             pdf_d1 = BlackScholes.normal_pdf(d1)
 
             if option_type == "CE":
-
                 delta = BlackScholes.normal_cdf(d1)
-
             else:
-
-                delta = (
-                    BlackScholes.normal_cdf(d1) - 1
-                )
+                delta = BlackScholes.normal_cdf(d1) - 1
 
             gamma = (
                 pdf_d1
@@ -310,7 +274,6 @@ class BlackScholes:
             ZeroDivisionError,
             OverflowError
         ):
-
             return np.nan, np.nan
 
 
@@ -323,29 +286,19 @@ class NSEOptionChainFetcher:
     def __init__(self, symbol="NIFTY"):
 
         self.symbol = symbol.upper()
-
         self.base_url = "https://www.nseindia.com"
 
         self.headers = {
-
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/122.0.0.0 Safari/537.36"
             ),
-
-            "Accept": (
-                "application/json, text/javascript, */*; q=0.01"
-            ),
-
+            "Accept": "application/json, text/javascript, */*; q=0.01",
             "Accept-Language": "en-US,en;q=0.9",
-
             "Accept-Encoding": "gzip, deflate",
-
             "Referer": "https://www.nseindia.com/option-chain",
-
             "X-Requested-With": "XMLHttpRequest",
-
             "Connection": "keep-alive"
         }
 
@@ -357,12 +310,7 @@ class NSEOptionChainFetcher:
     def _init_cookies(self):
 
         try:
-
-            self.session.get(
-                self.base_url,
-                timeout=15
-            )
-
+            self.session.get(self.base_url, timeout=15)
             time.sleep(1)
 
             self.session.get(
@@ -392,11 +340,9 @@ class NSEOptionChainFetcher:
         response.raise_for_status()
 
         try:
-
             return response.json()
 
         except ValueError:
-
             raise ValueError(
                 "NSE कडून JSON डेटा मिळाला नाही. "
                 f"HTTP Status: {response.status_code}. "
@@ -410,7 +356,6 @@ class NSEOptionChainFetcher:
             return np.nan
 
         try:
-
             if isinstance(value, str):
                 value = value.replace(",", "").strip()
 
@@ -419,7 +364,6 @@ class NSEOptionChainFetcher:
             return result if np.isfinite(result) else np.nan
 
         except (TypeError, ValueError):
-
             return np.nan
 
     @staticmethod
@@ -482,7 +426,6 @@ class NSEOptionChainFetcher:
             ).date()
 
             ist = ZoneInfo("Asia/Kolkata")
-
             current_time = datetime.now(ist)
 
             expiry_datetime = datetime.combine(
@@ -504,7 +447,6 @@ class NSEOptionChainFetcher:
             )
 
         except Exception:
-
             return np.nan
 
     # --------------------------------------------------
@@ -521,32 +463,23 @@ class NSEOptionChainFetcher:
         raw_data = self._get_json(url)
 
         if not isinstance(raw_data, dict):
-
             raise ValueError(
                 "Expiry API कडून चुकीचा Response मिळाला."
             )
 
-        expiry_dates = raw_data.get(
-            "expiryDates",
-            []
-        )
+        expiry_dates = raw_data.get("expiryDates", [])
 
         if not expiry_dates:
-
             records = raw_data.get("records", {})
-
             if isinstance(records, dict):
                 expiry_dates = records.get("expiryDates", [])
 
         if not expiry_dates:
-
             filtered = raw_data.get("filtered", {})
-
             if isinstance(filtered, dict):
                 expiry_dates = filtered.get("expiryDates", [])
 
         if not expiry_dates:
-
             raise ValueError(
                 "NSE API मधून Expiry Dates मिळाल्या नाहीत. "
                 f"Response: {str(raw_data)[:1000]}"
@@ -581,29 +514,19 @@ class NSEOptionChainFetcher:
         risk_free_rate
     ):
 
-        records_obj = option_raw.get(
-            "records",
-            {}
-        )
+        records_obj = option_raw.get("records", {})
 
         if not isinstance(records_obj, dict):
             records_obj = {}
 
-        option_records = records_obj.get(
-            "data",
-            []
-        )
+        option_records = records_obj.get("data", [])
 
-        filtered = option_raw.get(
-            "filtered",
-            {}
-        )
+        filtered = option_raw.get("filtered", {})
 
         if (
             not option_records
             and isinstance(filtered, dict)
         ):
-
             option_records = filtered.get("data", [])
 
         underlying_price = self.safe_number(
@@ -614,13 +537,11 @@ class NSEOptionChainFetcher:
             pd.isna(underlying_price)
             and isinstance(filtered, dict)
         ):
-
             underlying_price = self.safe_number(
                 filtered.get("underlyingValue")
             )
 
         if not option_records:
-
             raise ValueError(
                 "Option Chain मध्ये डेटा उपलब्ध नाही."
             )
@@ -629,20 +550,17 @@ class NSEOptionChainFetcher:
             pd.isna(underlying_price)
             or underlying_price <= 0
         ):
-
             raise ValueError(
                 "NSE कडून योग्य Underlying Spot Price मिळाला नाही."
             )
 
         selected_expiry = self.normalize_expiry(expiry)
-
         time_years = self.calculate_time_to_expiry(expiry)
 
         rows = []
 
         ce_valid_count = 0
         pe_valid_count = 0
-
         ce_iv_count = 0
         pe_iv_count = 0
 
@@ -676,17 +594,14 @@ class NSEOptionChainFetcher:
             call_iv_raw = self.safe_number(
                 ce.get("impliedVolatility")
             )
-
             call_iv = self.normalize_iv(call_iv_raw)
 
             call_ltp = self.safe_number(
                 ce.get("lastPrice")
             )
-
             call_oi = self.safe_number(
                 ce.get("openInterest")
             )
-
             call_change_oi = self.safe_number(
                 ce.get("changeinOpenInterest")
             )
@@ -694,24 +609,21 @@ class NSEOptionChainFetcher:
             put_iv_raw = self.safe_number(
                 pe.get("impliedVolatility")
             )
-
             put_iv = self.normalize_iv(put_iv_raw)
 
             put_ltp = self.safe_number(
                 pe.get("lastPrice")
             )
-
             put_oi = self.safe_number(
                 pe.get("openInterest")
             )
-
             put_change_oi = self.safe_number(
                 pe.get("changeinOpenInterest")
             )
 
-            # Delta and Gamma use the editable risk-free rate.
-            call_delta, call_gamma = BlackScholes.calculate(
+            # Black-Scholes Delta and Gamma
 
+            call_delta, call_gamma = BlackScholes.calculate(
                 spot=underlying_price,
                 strike=strike,
                 iv=call_iv,
@@ -721,7 +633,6 @@ class NSEOptionChainFetcher:
             )
 
             put_delta, put_gamma = BlackScholes.calculate(
-
                 spot=underlying_price,
                 strike=strike,
                 iv=put_iv,
@@ -763,7 +674,6 @@ class NSEOptionChainFetcher:
             })
 
         if not rows:
-
             raise ValueError(
                 "निवडलेल्या Expiry साठी Option Chain डेटा मिळाला नाही."
             )
@@ -821,8 +731,7 @@ class NSEOptionChainFetcher:
 
                         df.loc[i, "Put_Rev"] = (
                             underlying_price
-                            -
-                            (
+                            - (
                                 (call_ltp - put_ltp)
                                 / denominator
                             )
@@ -855,8 +764,7 @@ class NSEOptionChainFetcher:
 
                         df.loc[i, "Call_Rev"] = (
                             underlying_price
-                            -
-                            (
+                            - (
                                 (call_ltp - put_ltp)
                                 / denominator
                             )
@@ -897,28 +805,20 @@ def style_option_chain(df, spot_price):
     )
 
     if df.empty or pd.isna(spot_price):
-
-        return df.style.format(
-            na_rep="-"
-        )
+        return df.style.format(na_rep="-")
 
     atm_idx = (
         df[strike_col] - spot_price
     ).abs().idxmin()
 
-    atm_value = df.loc[
-        atm_idx,
-        strike_col
-    ]
+    atm_value = df.loc[atm_idx, strike_col]
 
     def apply_styles(row):
 
         styles = [""] * len(row)
-
         strike = row[strike_col]
 
         if strike == atm_value:
-
             return [
                 "background-color: #fff2cc; font-weight: bold;"
             ] * len(row)
@@ -929,7 +829,6 @@ def style_option_chain(df, spot_price):
 
                 if strike < spot_price:
                     styles[i] = "background-color: #e2f0d9;"
-
                 elif strike > spot_price:
                     styles[i] = "background-color: #ddebf7;"
 
@@ -937,14 +836,14 @@ def style_option_chain(df, spot_price):
 
                 if strike > spot_price:
                     styles[i] = "background-color: #e2f0d9;"
-
                 elif strike < spot_price:
                     styles[i] = "background-color: #ddebf7;"
 
         return styles
 
-    # Reversal columns display whole numbers.
-    # Calculations in the original dataframe retain full precision.
+    # --------------------------------------------------
+    # NUMBER FORMATTING
+    # --------------------------------------------------
 
     format_dict = {}
 
@@ -953,12 +852,16 @@ def style_option_chain(df, spot_price):
         if col == strike_col:
             continue
 
-        if col in ("Call Rev", "Put Rev"):
+        # Gamma: 8 decimal places
+        if col in ("Call Gamma", "Put Gamma"):
+            format_dict[col] = "{:.8f}"
 
+        # Reversal: whole numbers
+        elif col in ("Call Rev", "Put Rev"):
             format_dict[col] = "{:.0f}"
 
+        # Other columns: 2 decimal places
         else:
-
             format_dict[col] = "{:.2f}"
 
     format_dict[strike_col] = "{:.0f}"
@@ -994,10 +897,10 @@ symbol = st.sidebar.selectbox(
 )
 
 refresh_rate = st.sidebar.slider(
-    "Auto Refresh Interval (Seconds)",
+    "Auto Refresh Interval (minutes)",
     5,
-    60,
-    10
+    10,
+    30
 )
 
 auto_refresh = st.sidebar.checkbox(
@@ -1019,9 +922,6 @@ st.sidebar.subheader(
     "Risk-Free Interest Rate"
 )
 
-# Fetch the latest RBI rate.
-# RBI result is cached for one hour.
-
 try:
 
     rbi_result = RBIYieldFetcher.get_latest_yield()
@@ -1032,9 +932,6 @@ try:
     previous_rbi_date = st.session_state.get(
         "last_applied_rbi_date"
     )
-
-    # Apply RBI rate only when a new auction date is found.
-    # Manual changes remain untouched during normal reruns.
 
     if previous_rbi_date != latest_rbi_date:
 
@@ -1048,23 +945,18 @@ try:
 
     st.session_state["last_rbi_rate"] = latest_rbi_rate
     st.session_state["last_rbi_date"] = latest_rbi_date
-
     st.session_state["rbi_rate_status"] = "live"
 
 except Exception:
 
-    # If RBI data is unavailable, retain the user's current
-    # selected rate. If this is the first run, use 6.50%.
-
     if "risk_free_rate_input" not in st.session_state:
-
         st.session_state["risk_free_rate_input"] = 6.50
 
     st.session_state["rbi_rate_status"] = "fallback"
 
 
-# Create editable number input after initializing session state.
-# Do not use value= together with this key.
+if "risk_free_rate_input" not in st.session_state:
+    st.session_state["risk_free_rate_input"] = 6.50
 
 risk_free_rate_percent = st.sidebar.number_input(
     "Risk-Free Interest Rate (%)",
@@ -1074,8 +966,6 @@ risk_free_rate_percent = st.sidebar.number_input(
     format="%.4f",
     key="risk_free_rate_input"
 )
-
-# Convert percentage to decimal for Black-Scholes.
 
 risk_free_rate = risk_free_rate_percent / 100.0
 
@@ -1141,20 +1031,14 @@ try:
 
     col1, col2, col3, col4 = st.columns(4)
 
-    col1.metric(
-        "Index",
-        symbol
-    )
+    col1.metric("Index", symbol)
 
     col2.metric(
         "Underlying Spot Price",
         f"₹{underlying_price:,.2f}"
     )
 
-    col3.metric(
-        "Expiry",
-        selected_expiry
-    )
+    col3.metric("Expiry", selected_expiry)
 
     col4.metric(
         "Calculated Option Sides",
@@ -1167,25 +1051,10 @@ try:
 
     g1, g2, g3, g4 = st.columns(4)
 
-    g1.metric(
-        "CE Delta Available",
-        ce_valid_count
-    )
-
-    g2.metric(
-        "PE Delta Available",
-        pe_valid_count
-    )
-
-    g3.metric(
-        "CE IV Available",
-        ce_iv_count
-    )
-
-    g4.metric(
-        "PE IV Available",
-        pe_iv_count
-    )
+    g1.metric("CE Delta Available", ce_valid_count)
+    g2.metric("PE Delta Available", pe_valid_count)
+    g3.metric("CE IV Available", ce_iv_count)
+    g4.metric("PE IV Available", pe_iv_count)
 
     if ce_valid_count == 0 and pe_valid_count == 0:
 
@@ -1269,15 +1138,8 @@ try:
             "Calculation Debug Information"
         )
 
-        st.write(
-            "Calculation Model:",
-            "Black-Scholes"
-        )
-
-        st.write(
-            "Underlying:",
-            "NSE Spot Price"
-        )
+        st.write("Calculation Model:", "Black-Scholes")
+        st.write("Underlying:", "NSE Spot Price")
 
         st.write(
             "Risk-Free Interest Rate Used:",
@@ -1304,25 +1166,10 @@ try:
             len(option_records)
         )
 
-        st.write(
-            "CE IV Available:",
-            ce_iv_count
-        )
-
-        st.write(
-            "PE IV Available:",
-            pe_iv_count
-        )
-
-        st.write(
-            "CE Delta Available:",
-            ce_valid_count
-        )
-
-        st.write(
-            "PE Delta Available:",
-            pe_valid_count
-        )
+        st.write("CE IV Available:", ce_iv_count)
+        st.write("PE IV Available:", pe_iv_count)
+        st.write("CE Delta Available:", ce_valid_count)
+        st.write("PE Delta Available:", pe_valid_count)
 
         st.write(
             "First 3 NSE Option Chain Records:",
@@ -1334,6 +1181,16 @@ try:
             df.head(5)
         )
 
+        st.write(
+            "Call Gamma Raw Values:",
+            df["Call_Gamma"].head(5).tolist()
+        )
+
+        st.write(
+            "Put Gamma Raw Values:",
+            df["Put_Gamma"].head(5).tolist()
+        )
+
     st.caption(
         "ATM: Light Yellow and Bold | "
         "ITM: Light Green | OTM: Light Blue | "
@@ -1343,6 +1200,10 @@ try:
     st.caption(
         "Call Rev and Put Rev are displayed as whole numbers. "
         "Their calculations retain full precision."
+    )
+
+    st.caption(
+        "Gamma is displayed up to 8 decimal places."
     )
 
     st.caption(
