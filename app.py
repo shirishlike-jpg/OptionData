@@ -1,8 +1,10 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
 import time
+import traceback
 
 
 st.set_page_config(
@@ -12,12 +14,12 @@ st.set_page_config(
 
 
 class NSEOptionChainFetcher:
+
     def __init__(self, symbol="NIFTY"):
+
         self.symbol = symbol.upper()
         self.base_url = "https://www.nseindia.com"
 
-        # Do not request Brotli (br). This avoids the unsupported
-        # Accept-Encoding: br error seen in some environments.
         self.headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -34,23 +36,32 @@ class NSEOptionChainFetcher:
 
         self.session = requests.Session()
         self.session.headers.update(self.headers)
+
         self._init_cookies()
 
     def _init_cookies(self):
+
         try:
-            self.session.get(self.base_url, timeout=15)
+            self.session.get(
+                self.base_url,
+                timeout=15
+            )
+
             time.sleep(1)
+
             self.session.get(
                 f"{self.base_url}/option-chain",
                 timeout=15
             )
+
             time.sleep(1)
+
         except requests.RequestException:
             pass
 
     @staticmethod
     def normalize_expiry(value):
-        """Convert NSE expiry strings to a common YYYY-MM-DD key."""
+
         if not value:
             return None
 
@@ -65,7 +76,29 @@ class NSEOptionChainFetcher:
 
         return parsed.strftime("%Y-%m-%d")
 
+    @staticmethod
+    def safe_number(value):
 
+        try:
+            if value is None:
+                return np.nan
+
+            number = pd.to_numeric(
+                value,
+                errors="coerce"
+            )
+
+            if pd.isna(number):
+                return np.nan
+
+            return float(number)
+
+        except (TypeError, ValueError):
+            return np.nan
+
+    # =====================================
+    # UPDATED JSON FETCH FUNCTION
+    # =====================================
 
     def _get_json(self, url):
 
@@ -74,6 +107,7 @@ class NSEOptionChainFetcher:
             timeout=20
         )
 
+        # Retry once after refreshing cookies
         if response.status_code in (401, 403, 429):
 
             self._init_cookies()
@@ -83,35 +117,42 @@ class NSEOptionChainFetcher:
                 timeout=20
             )
 
+        # Try to read JSON response
         try:
             raw_data = response.json()
 
-            if (
-                "option-chain-contract-info" in url
-                and isinstance(raw_data, dict)
-                and raw_data.get("expiryDates")
-            ):
-                return raw_data
-
-            response.raise_for_status()
-            return raw_data
-
         except ValueError:
+
             response.raise_for_status()
 
             raise ValueError(
                 "NSE कडून वैध JSON डेटा मिळाला नाही."
             )
 
+        # Special handling for Expiry API.
+        # Accept only if the response contains actual expiry dates.
+        if response.status_code == 403:
 
-    except ValueError:
+            if (
+                "option-chain-contract-info" in url
+                and isinstance(raw_data, dict)
+                and isinstance(raw_data.get("expiryDates"), list)
+                and len(raw_data.get("expiryDates", [])) > 0
+            ):
+                return raw_data
+
+            response.raise_for_status()
+
         response.raise_for_status()
-        raise ValueError(
-            "NSE कडून वैध JSON डेटा मिळाला नाही."
-        )
 
+        return raw_data
+
+    # =====================================
+    # GET EXPIRY DATES
+    # =====================================
 
     def get_expiry_dates(self):
+
         url = (
             f"{self.base_url}/api/option-chain-contract-info"
             f"?symbol={self.symbol}"
@@ -122,146 +163,267 @@ class NSEOptionChainFetcher:
         expiry_dates = raw_data.get("expiryDates", [])
 
         if not expiry_dates:
+
             records = raw_data.get("records", {})
+
             if isinstance(records, dict):
                 expiry_dates = records.get("expiryDates", [])
 
         if not expiry_dates:
+
             raise ValueError(
-                "NSE API मधून Expiry Dates मिळाल्या नाहीत. "
-                f"Response: {str(raw_data)[:500]}"
+                "NSE API मधून Expiry Dates मिळाल्या नाहीत."
             )
 
         return expiry_dates
 
+    # =====================================
+    # FETCH OPTION CHAIN
+    # =====================================
+
     def fetch_option_chain(self, expiry):
+
         url = (
             f"{self.base_url}/api/option-chain-v3"
             f"?type=Indices&symbol={self.symbol}&expiry={expiry}"
         )
+
         return self._get_json(url)
 
+    # =====================================
+    # FETCH OPTION GREEKS
+    # =====================================
+
     def fetch_option_greeks(self, expiry):
+
         url = (
             f"{self.base_url}/api/NextApi/apiClient/OptionGreekApi"
             f"?functionName=getOptionGreekTableData"
             f"&symbol={self.symbol}&params=expiryDate={expiry}"
         )
+
         return self._get_json(url)
 
-    def process_option_chain(self, option_raw, greek_raw, expiry):
+    # =====================================
+    # PROCESS OPTION CHAIN
+    # =====================================
+
+    def process_option_chain(
+        self,
+        option_raw,
+        greek_raw,
+        expiry
+    ):
+
         records_obj = option_raw.get("records", {})
+
         option_records = records_obj.get("data", [])
-        spot_price = records_obj.get("underlyingValue", 0)
+
+        spot_price = self.safe_number(
+            records_obj.get("underlyingValue")
+        )
+
+        if pd.isna(spot_price) or spot_price <= 0:
+
+            raise ValueError(
+                "NSE Option Chain मधून Spot Price मिळाली नाही."
+            )
 
         if not option_records:
-            raise ValueError("Option Chain मध्ये कोणताही डेटा उपलब्ध नाही.")
+
+            raise ValueError(
+                "Option Chain मध्ये कोणताही डेटा उपलब्ध नाही."
+            )
 
         selected_expiry_key = self.normalize_expiry(expiry)
 
-        # Build a lookup using Strike + Expiry.
-        # Greek API expiry is commonly DD-MM-YYYY, while Option Chain
-        # expiry is commonly DD-Mon-YYYY. Normalize both before matching.
+        # =================================
+        # BUILD GREEK LOOKUP
+        # =================================
+
         greek_lookup = {}
 
-        for item in greek_raw.get("data", []):
+        greek_records = greek_raw.get("data", [])
+
+        if not isinstance(greek_records, list):
+            greek_records = []
+
+        for item in greek_records:
+
             strike = item.get("strikePrice")
+
             item_expiry = self.normalize_expiry(
                 item.get("expiryDates") or item.get("expiryDate")
             )
 
-            if strike is None or item_expiry != selected_expiry_key:
+            if (
+                strike is None
+                or item_expiry != selected_expiry_key
+            ):
                 continue
 
-            try:
-                strike_key = float(strike)
-            except (TypeError, ValueError):
+            strike_key = self.safe_number(strike)
+
+            if pd.isna(strike_key):
                 continue
+
+            ce = item.get("CE") or {}
+            pe = item.get("PE") or {}
 
             greek_lookup[strike_key] = {
-                "Call_Delta": item.get("CE", {}).get("ogdDelta", np.nan),
-                "Call_Gamma": item.get("CE", {}).get("ogdGamma", np.nan),
-                "Put_Delta": item.get("PE", {}).get("ogdDelta", np.nan),
-                "Put_Gamma": item.get("PE", {}).get("ogdGamma", np.nan)
+
+                "Call_Delta": self.safe_number(
+                    ce.get("ogdDelta")
+                ),
+
+                "Call_Gamma": self.safe_number(
+                    ce.get("ogdGamma")
+                ),
+
+                "Put_Delta": self.safe_number(
+                    pe.get("ogdDelta")
+                ),
+
+                "Put_Gamma": self.safe_number(
+                    pe.get("ogdGamma")
+                )
             }
+
+        # =================================
+        # PROCESS OPTION CHAIN RECORDS
+        # =================================
 
         rows = []
 
         for record in option_records:
+
             record_expiry = (
-                record.get("expiryDates") or record.get("expiryDate")
+                record.get("expiryDates")
+                or record.get("expiryDate")
             )
 
-            if self.normalize_expiry(record_expiry) != selected_expiry_key:
+            if (
+                self.normalize_expiry(record_expiry)
+                != selected_expiry_key
+            ):
                 continue
 
-            strike = record.get("strikePrice")
-            if strike is None:
-                continue
+            strike = self.safe_number(
+                record.get("strikePrice")
+            )
 
-            try:
-                strike_key = float(strike)
-            except (TypeError, ValueError):
+            if pd.isna(strike):
                 continue
 
             ce = record.get("CE") or {}
             pe = record.get("PE") or {}
-            greek = greek_lookup.get(strike_key, {})
+
+            greek = greek_lookup.get(strike, {})
 
             rows.append({
-                "Strike": strike_key,
 
-                # Option Chain API: use it for prices, OI and IV.
-                "Call_OI": ce.get("openInterest", 0),
-                "Call_Change_OI": ce.get("changeinOpenInterest", 0),
-                "Call_LTP": ce.get("lastPrice", 0),
-                "Call_IV": ce.get("impliedVolatility", 0),
+                "Strike": strike,
 
-                # Option Greek API: use it only for Delta and Gamma.
-                # Missing values remain blank (NaN); no artificial defaults.
-                "Call_Delta": greek.get("Call_Delta", np.nan),
-                "Call_Gamma": greek.get("Call_Gamma", np.nan),
+                "Call_OI": self.safe_number(
+                    ce.get("openInterest")
+                ),
 
-                "Put_OI": pe.get("openInterest", 0),
-                "Put_Change_OI": pe.get("changeinOpenInterest", 0),
-                "Put_LTP": pe.get("lastPrice", 0),
-                "Put_IV": pe.get("impliedVolatility", 0),
+                "Call_Change_OI": self.safe_number(
+                    ce.get("changeinOpenInterest")
+                ),
 
-                "Put_Delta": greek.get("Put_Delta", np.nan),
-                "Put_Gamma": greek.get("Put_Gamma", np.nan)
+                "Call_LTP": self.safe_number(
+                    ce.get("lastPrice")
+                ),
+
+                "Call_IV": self.safe_number(
+                    ce.get("impliedVolatility")
+                ),
+
+                "Call_Delta": greek.get(
+                    "Call_Delta", np.nan
+                ),
+
+                "Call_Gamma": greek.get(
+                    "Call_Gamma", np.nan
+                ),
+
+                "Put_OI": self.safe_number(
+                    pe.get("openInterest")
+                ),
+
+                "Put_Change_OI": self.safe_number(
+                    pe.get("changeinOpenInterest")
+                ),
+
+                "Put_LTP": self.safe_number(
+                    pe.get("lastPrice")
+                ),
+
+                "Put_IV": self.safe_number(
+                    pe.get("impliedVolatility")
+                ),
+
+                "Put_Delta": greek.get(
+                    "Put_Delta", np.nan
+                ),
+
+                "Put_Gamma": greek.get(
+                    "Put_Gamma", np.nan
+                )
+
             })
 
         if not rows:
+
             raise ValueError(
                 "निवडलेल्या Expiry साठी Option Chain डेटा मिळाला नाही."
             )
 
         df = pd.DataFrame(rows)
-        df = df.sort_values("Strike").reset_index(drop=True)
 
-        # Keep ATM in the middle:
-        # 10 strikes below + ATM + 10 strikes above = 21 strikes.
-        if spot_price and spot_price > 0:
-            atm_idx = (df["Strike"] - spot_price).abs().idxmin()
+        df = df.sort_values(
+            "Strike"
+        ).reset_index(drop=True)
+
+        # =================================
+        # SELECT ATM + 10 STRIKES ABOVE/BELOW
+        # =================================
+
+        if len(df) > 21:
+
+            atm_idx = (
+                df["Strike"] - spot_price
+            ).abs().idxmin()
 
             start_idx = max(0, atm_idx - 10)
-            end_idx = min(len(df), atm_idx + 11)
 
-            df = df.iloc[start_idx:end_idx].copy().reset_index(drop=True)
-        
+            end_idx = min(
+                len(df),
+                atm_idx + 11
+            )
 
-        # Reversal calculations are retained from the original code.
-        # Reversal calculations using index-wise strike difference
+            df = df.iloc[
+                start_idx:end_idx
+            ].copy().reset_index(drop=True)
+
+        # =================================
+        # REVERSAL CALCULATIONS
+        # =================================
 
         df["Call_Rev"] = np.nan
         df["Put_Rev"] = np.nan
 
-        # Strike interval according to selected index
         if self.symbol == "NIFTY":
+
             strike_step = 50
+
         elif self.symbol in ["BANKNIFTY", "FINNIFTY"]:
+
             strike_step = 100
+
         else:
+
             strike_step = 50
 
         strike_lookup = df.set_index("Strike")
@@ -270,66 +432,128 @@ class NSEOptionChainFetcher:
 
             k = row["Strike"]
 
-            # EOR = S - [CE(K+step) - PE(K)] /
-            #           [CE Delta(K+step) - PE Delta(K)]
+            # =================================
+            # EOR - CALL REVERSAL
+            #
+            # EOR = S - [CE(K+step) - PE(K)]
+            #           / [CE Delta(K+step) - PE Delta(K)]
+            # =================================
 
             if k + strike_step in strike_lookup.index:
 
-                ce_high = strike_lookup.loc[k + strike_step]
+                ce_high = strike_lookup.loc[
+                    k + strike_step
+                ]
+
                 pe_current = strike_lookup.loc[k]
 
-                numerator = (
-                    ce_high["Call_LTP"] - pe_current["Put_LTP"]
+                ce_ltp = self.safe_number(
+                    ce_high["Call_LTP"]
                 )
 
-                denominator = (
-                    ce_high["Call_Delta"] - pe_current["Put_Delta"]
+                pe_ltp = self.safe_number(
+                    pe_current["Put_LTP"]
                 )
 
-                if (
-                    pd.notna(numerator)
-                    and pd.notna(denominator)
-                    and denominator != 0
+                ce_delta = self.safe_number(
+                    ce_high["Call_Delta"]
+                )
+
+                pe_delta = self.safe_number(
+                    pe_current["Put_Delta"]
+                )
+
+                if all(
+                    np.isfinite(x)
+                    for x in [
+                        ce_ltp,
+                        pe_ltp,
+                        ce_delta,
+                        pe_delta
+                    ]
                 ):
-                    df.loc[i, "Call_Rev"] = (
-                        spot_price - numerator / denominator
-                    )
 
-            # EOS = S - [CE(K) - PE(K-step)] /
-            #           [CE Delta(K) - PE Delta(K-step)]
+                    numerator = ce_ltp - pe_ltp
+
+                    denominator = ce_delta - pe_delta
+
+                    if denominator != 0:
+
+                        df.loc[i, "Call_Rev"] = (
+                            spot_price
+                            - numerator / denominator
+                        )
+
+            # =================================
+            # EOS - PUT REVERSAL
+            #
+            # EOS = S - [CE(K) - PE(K-step)]
+            #           / [CE Delta(K) - PE Delta(K-step)]
+            # =================================
 
             if k - strike_step in strike_lookup.index:
 
                 ce_current = strike_lookup.loc[k]
-                pe_low = strike_lookup.loc[k - strike_step]
 
-                numerator = (
-                    ce_current["Call_LTP"] - pe_low["Put_LTP"]
+                pe_low = strike_lookup.loc[
+                    k - strike_step
+                ]
+
+                ce_ltp = self.safe_number(
+                    ce_current["Call_LTP"]
                 )
 
-                denominator = (
-                    ce_current["Call_Delta"] - pe_low["Put_Delta"]
+                pe_ltp = self.safe_number(
+                    pe_low["Put_LTP"]
                 )
 
-                if (
-                    pd.notna(numerator)
-                    and pd.notna(denominator)
-                    and denominator != 0
+                ce_delta = self.safe_number(
+                    ce_current["Call_Delta"]
+                )
+
+                pe_delta = self.safe_number(
+                    pe_low["Put_Delta"]
+                )
+
+                if all(
+                    np.isfinite(x)
+                    for x in [
+                        ce_ltp,
+                        pe_ltp,
+                        ce_delta,
+                        pe_delta
+                    ]
                 ):
-                    df.loc[i, "Put_Rev"] = (
-                        spot_price - numerator / denominator
-                    )
+
+                    numerator = ce_ltp - pe_ltp
+
+                    denominator = ce_delta - pe_delta
+
+                    if denominator != 0:
+
+                        df.loc[i, "Put_Rev"] = (
+                            spot_price
+                            - numerator / denominator
+                        )
 
         return df, spot_price, len(greek_lookup)
 
+    # =====================================
+    # FETCH ALL DATA
+    # =====================================
+
     def fetch_data(self, expiry):
+
         option_raw = self.fetch_option_chain(expiry)
 
-        # If the Greek API is temporarily unavailable, keep Option Chain
-        # data visible and leave Greek columns blank.
+        # Greek API failure should not stop Option Chain data
+
         try:
+
             greek_raw = self.fetch_option_greeks(expiry)
+
         except Exception:
+
             greek_raw = {"data": []}
 
         return self.process_option_chain(
@@ -339,11 +563,17 @@ class NSEOptionChainFetcher:
         )
 
 
-# ------------------------- Streamlit Dashboard -------------------------
+# ==========================================
+# STREAMLIT DASHBOARD
+# ==========================================
 
-st.title("📊 NSE Live Option Chain & Reversal Levels")
+st.title(
+    "📊 NSE Live Option Chain & Reversal Levels"
+)
 
-st.sidebar.header("Dashboard Controls")
+st.sidebar.header(
+    "Dashboard Controls"
+)
 
 symbol = st.sidebar.selectbox(
     "Select Index",
@@ -357,21 +587,29 @@ refresh_rate = st.sidebar.slider(
     10
 )
 
-auto_refresh = st.sidebar.checkbox("Enable Auto Refresh", value=False)
+auto_refresh = st.sidebar.checkbox(
+    "Enable Auto Refresh",
+    value=False
+)
 
 fetcher = NSEOptionChainFetcher(symbol)
 
 try:
+
     expiry_dates = fetcher.get_expiry_dates()
+
     selected_expiry = st.sidebar.selectbox(
         "Select Expiry",
         expiry_dates,
         index=0
     )
 
-    with st.spinner("NSE मधून Option Chain आणि Greeks डेटा घेत आहे..."):
+    with st.spinner(
+        "NSE मधून Option Chain आणि Greeks डेटा घेत आहे..."
+    ):
+
         df, spot_price, greek_count = fetcher.fetch_data(
-        selected_expiry
+            selected_expiry
         )
 
     st.success(
@@ -379,18 +617,35 @@ try:
     )
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Index", symbol)
-    col2.metric("Spot Price", f"₹{spot_price:,.2f}")
-    col3.metric("Expiry", selected_expiry)
+
+    col1.metric(
+        "Index",
+        symbol
+    )
+
+    col2.metric(
+        "Spot Price",
+        f"₹{spot_price:,.2f}"
+    )
+
+    col3.metric(
+        "Expiry",
+        selected_expiry
+    )
 
     if greek_count == 0:
+
         st.warning(
             "Option Chain डेटा मिळाला आहे; पण Option Greek API मधून "
             "Greeks मिळाले नाहीत. Delta आणि Gamma रिकामे दाखवले जातील."
         )
 
-        # Prepare dashboard table in required column order
+    # ---------------------------------
+    # PREPARE DASHBOARD TABLE
+    # ---------------------------------
+
     display_df = df[[
+
         "Call_Gamma",
         "Call_Delta",
         "Call_OI",
@@ -406,10 +661,13 @@ try:
         "Put_OI",
         "Put_Delta",
         "Put_Gamma"
+
     ]].copy()
 
-    # Rename columns for display
+    # Rename Columns
+
     display_df.columns = [
+
         "CALL Gamma",
         "CALL Delta",
         "CALL OI",
@@ -425,38 +683,57 @@ try:
         "PUT OI",
         "PUT Delta",
         "PUT Gamma"
+
     ]
 
-    # Display Strike Price and Reversal Levels as full integers
+    # ---------------------------------
+    # INTEGER FORMATTING
+    # ---------------------------------
+
     integer_columns = [
+
         "SP",
         "Call Rev LTP/Spot",
         "Put Rev LTP/Spot"
+
     ]
 
     for col in integer_columns:
+
         display_df[col] = pd.to_numeric(
             display_df[col],
             errors="coerce"
         ).round(0).astype("Int64")
 
-    # Display table
+    # ---------------------------------
+    # DISPLAY TABLE
+    # ---------------------------------
+
+    styled_df = display_df.style.format({
+
+        "CALL Gamma": "{:.4f}",
+        "CALL Delta": "{:.4f}",
+
+        "CALL OI": "{:,.0f}",
+        "CALL Change In OI": "{:,.0f}",
+
+        "CALL LTP": "{:.2f}",
+        "CALL IV": "{:.2f}",
+
+        "PUT IV": "{:.2f}",
+        "PUT LTP": "{:.2f}",
+
+        "PUT Change In OI": "{:,.0f}",
+        "PUT OI": "{:,.0f}",
+
+        "PUT Delta": "{:.4f}",
+        "PUT Gamma": "{:.4f}"
+
+    }, na_rep="")
+
     st.dataframe(
-        display_df.style.format({
-            "CALL Gamma": "{:.4f}",
-            "CALL Delta": "{:.4f}",
-            "CALL OI": "{:,.0f}",
-            "CALL Change In OI": "{:,.0f}",
-            "CALL LTP": "{:.2f}",
-            "CALL IV": "{:.2f}",
-            "PUT IV": "{:.2f}",
-            "PUT LTP": "{:.2f}",
-            "PUT Change In OI": "{:,.0f}",
-            "PUT OI": "{:,.0f}",
-            "PUT Delta": "{:.4f}",
-            "PUT Gamma": "{:.4f}"
-        }, na_rep=""),
-        use_container_width=True,
+        styled_df,
+        width="stretch",
         hide_index=True
     )
 
@@ -466,13 +743,26 @@ try:
     )
 
 except Exception as e:
+
     st.error(
         "NSE डेटा मिळवताना अडचण आली. काही वेळाने पुन्हा प्रयत्न करा."
     )
-    st.caption(f"तांत्रिक तपशील: {e}")
 
-# Auto-refresh is optional. It is disabled by default to avoid
-# continuously sending requests to NSE when the dashboard is not in use.
+    st.error(
+        f"तांत्रिक तपशील: {e}"
+    )
+
+    st.code(
+        traceback.format_exc()
+    )
+
+
+# ---------------------------------
+# AUTO REFRESH
+# ---------------------------------
+
 if auto_refresh:
+
     time.sleep(refresh_rate)
+
     st.rerun()
