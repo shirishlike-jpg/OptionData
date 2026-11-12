@@ -65,16 +65,45 @@ class NSEOptionChainFetcher:
 
         return parsed.strftime("%Y-%m-%d")
 
-    
+
     def _get_json(self, url):
-        response = self.session.get(url, timeout=20)
 
-        if response.status_code in (401, 403, 429):
-            self._init_cookies()
-            response = self.session.get(url, timeout=20)
+    response = self.session.get(
+        url,
+        timeout=20
+    )
 
+    if response.status_code in (401, 403, 429):
+
+        self._init_cookies()
+
+        response = self.session.get(
+            url,
+            timeout=20
+        )
+
+    # प्रथम JSON मिळतो का ते तपासा
+    try:
+        raw_data = response.json()
+
+        # 403 असूनही वैध Expiry JSON मिळाला
+        if (
+            "option-chain-contract-info" in url
+            and isinstance(raw_data, dict)
+            and raw_data.get("expiryDates")
+        ):
+            return raw_data
+
+        # इतर वैध JSON Response
         response.raise_for_status()
-        return response.json()
+        return raw_data
+
+    except ValueError:
+        response.raise_for_status()
+        raise ValueError(
+            "NSE कडून वैध JSON डेटा मिळाला नाही."
+        )
+
 
     def get_expiry_dates(self):
         url = (
