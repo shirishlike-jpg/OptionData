@@ -5,15 +5,226 @@ import numpy as np
 import requests
 import time
 import math
+import re
 
 from datetime import datetime, date, time as dt_time
 from zoneinfo import ZoneInfo
+from html.parser import HTMLParser
+from urllib.parse import urljoin
 
 
 st.set_page_config(
     page_title="NSE Option Chain & Reversal Dashboard",
     layout="wide"
 )
+
+
+# ======================================================
+# RBI 91-DAY T-BILL YIELD FETCHER
+# ======================================================
+
+class RBIYieldFetcher:
+
+    BASE_URL = "https://www.rbi.org.in"
+
+    LIST_URL = (
+        "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx"
+    )
+
+    HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
+
+    class AnchorParser(HTMLParser):
+
+        def __init__(self):
+            super().__init__()
+            self.links = []
+            self.current_href = None
+            self.current_text = []
+
+        def handle_starttag(self, tag, attrs):
+
+            if tag.lower() == "a":
+
+                attrs = dict(attrs)
+
+                self.current_href = attrs.get("href")
+                self.current_text = []
+
+        def handle_data(self, data):
+
+            if self.current_href:
+                self.current_text.append(data)
+
+        def handle_endtag(self, tag):
+
+            if tag.lower() == "a" and self.current_href:
+
+                text_value = " ".join(
+                    self.current_text
+                ).strip()
+
+                self.links.append(
+                    (text_value, self.current_href)
+                )
+
+                self.current_href = None
+                self.current_text = []
+
+    @staticmethod
+    def get_page_text(html):
+
+        parser = RBIYieldFetcher.AnchorParser()
+
+        parser.feed(html)
+
+        # Remove HTML tags using standard HTML parser.
+        class TextParser(HTMLParser):
+
+            def __init__(self):
+                super().__init__()
+                self.parts = []
+
+            def handle_data(self, data):
+                self.parts.append(data)
+
+        text_parser = TextParser()
+        text_parser.feed(html)
+
+        return " ".join(text_parser.parts), parser.links
+
+    @staticmethod
+    def parse_yield(html):
+
+        text, _ = RBIYieldFetcher.get_page_text(html)
+
+        text = re.sub(r"\s+", " ", text)
+
+        date_match = re.search(
+            r"Date\s*:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})",
+            text,
+            re.IGNORECASE
+        )
+
+        if not date_match:
+            return None
+
+        date_text = date_match.group(1)
+
+        try:
+            yield_date = datetime.strptime(
+                date_text,
+                "%b %d, %Y"
+            ).date()
+
+        except ValueError:
+            return None
+
+        # Extract the first YTM after the 91-Day section.
+        section_match = re.search(
+            r"91-Day.*?YTM\s*:\s*([0-9.]+)\s*%",
+            text,
+            re.IGNORECASE
+        )
+
+        if not section_match:
+            return None
+
+        yield_value = float(
+            section_match.group(1)
+        )
+
+        if not (0 < yield_value < 30):
+            return None
+
+        return {
+            "rate": yield_value,
+            "date": yield_date,
+            "source": "RBI 91-Day T-Bill Auction Result"
+        }
+
+    @staticmethod
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def get_latest_yield():
+
+        session = requests.Session()
+        session.headers.update(
+            RBIYieldFetcher.HEADERS
+        )
+
+        response = session.get(
+            RBIYieldFetcher.LIST_URL,
+            timeout=20
+        )
+
+        response.raise_for_status()
+
+        _, links = RBIYieldFetcher.get_page_text(
+            response.text
+        )
+
+        candidates = []
+
+        for title, href in links:
+
+            clean_title = re.sub(
+                r"\s+",
+                " ",
+                title
+            ).strip().lower()
+
+            if (
+                "treasury bills" in clean_title
+                and "full auction result" in clean_title
+                and href
+            ):
+
+                full_url = urljoin(
+                    RBIYieldFetcher.BASE_URL,
+                    href
+                )
+
+                if full_url not in candidates:
+                    candidates.append(full_url)
+
+        if not candidates:
+
+            raise ValueError(
+                "RBI Press Release मधून T-Bill Auction Result link मिळाली नाही."
+            )
+
+        # Check latest available auction-result pages.
+        for page_url in candidates[:15]:
+
+            try:
+
+                page_response = session.get(
+                    page_url,
+                    timeout=20
+                )
+
+                page_response.raise_for_status()
+
+                result = RBIYieldFetcher.parse_yield(
+                    page_response.text
+                )
+
+                if result:
+
+                    return result
+
+            except requests.RequestException:
+                continue
+
+        raise ValueError(
+            "RBI पेजवरून 91-Day T-Bill Yield वाचता आला नाही."
+        )
 
 
 # ======================================================
@@ -66,9 +277,7 @@ class BlackScholes:
                 return np.nan, np.nan
 
             sigma = iv
-
             r = risk_free_rate
-
             T = time_years
 
             d1 = (
@@ -146,14 +355,9 @@ class NSEOptionChainFetcher:
         }
 
         self.session = requests.Session()
-
         self.session.headers.update(self.headers)
 
         self._init_cookies()
-
-    # --------------------------------------------------
-    # SESSION AND COOKIE
-    # --------------------------------------------------
 
     def _init_cookies(self):
 
@@ -204,10 +408,6 @@ class NSEOptionChainFetcher:
                 f"Response: {response.text[:500]}"
             )
 
-    # --------------------------------------------------
-    # COMMON FUNCTIONS
-    # --------------------------------------------------
-
     @staticmethod
     def safe_number(value):
 
@@ -217,7 +417,6 @@ class NSEOptionChainFetcher:
         try:
 
             if isinstance(value, str):
-
                 value = value.replace(",", "").strip()
 
             result = float(value)
@@ -247,7 +446,6 @@ class NSEOptionChainFetcher:
             )
 
             if not pd.isna(parsed):
-
                 return parsed.strftime("%Y-%m-%d")
 
         parsed = pd.to_datetime(
@@ -261,10 +459,6 @@ class NSEOptionChainFetcher:
 
         return parsed.strftime("%Y-%m-%d")
 
-    # --------------------------------------------------
-    # IV NORMALIZATION
-    # --------------------------------------------------
-
     @staticmethod
     def normalize_iv(value):
 
@@ -273,13 +467,7 @@ class NSEOptionChainFetcher:
         if pd.isna(iv) or iv <= 0:
             return np.nan
 
-        # NSE Option Chain IV is expressed in percentage.
-        # Example: 15.50 means 15.50%.
         return iv / 100.0
-
-    # --------------------------------------------------
-    # TIME TO EXPIRY
-    # --------------------------------------------------
 
     @staticmethod
     def calculate_time_to_expiry(expiry):
@@ -353,22 +541,14 @@ class NSEOptionChainFetcher:
             records = raw_data.get("records", {})
 
             if isinstance(records, dict):
-
-                expiry_dates = records.get(
-                    "expiryDates",
-                    []
-                )
+                expiry_dates = records.get("expiryDates", [])
 
         if not expiry_dates:
 
             filtered = raw_data.get("filtered", {})
 
             if isinstance(filtered, dict):
-
-                expiry_dates = filtered.get(
-                    "expiryDates",
-                    []
-                )
+                expiry_dates = filtered.get("expiryDates", [])
 
         if not expiry_dates:
 
@@ -396,7 +576,7 @@ class NSEOptionChainFetcher:
         return self._get_json(url)
 
     # --------------------------------------------------
-    # PROCESS OPTION CHAIN AND CALCULATE GREEKS
+    # PROCESS OPTION CHAIN
     # --------------------------------------------------
 
     def process_option_chain(
@@ -429,12 +609,7 @@ class NSEOptionChainFetcher:
             and isinstance(filtered, dict)
         ):
 
-            option_records = filtered.get(
-                "data",
-                []
-            )
-
-        # NSE SPOT PRICE
+            option_records = filtered.get("data", [])
 
         underlying_price = self.safe_number(
             records_obj.get("underlyingValue")
@@ -466,9 +641,7 @@ class NSEOptionChainFetcher:
 
         selected_expiry = self.normalize_expiry(expiry)
 
-        time_years = self.calculate_time_to_expiry(
-            expiry
-        )
+        time_years = self.calculate_time_to_expiry(expiry)
 
         rows = []
 
@@ -493,7 +666,6 @@ class NSEOptionChainFetcher:
                 and self.normalize_expiry(record_expiry)
                 != selected_expiry
             ):
-
                 continue
 
             strike = self.safe_number(
@@ -504,20 +676,13 @@ class NSEOptionChainFetcher:
                 continue
 
             ce = record.get("CE") or {}
-
             pe = record.get("PE") or {}
-
-            # ------------------------------------------
-            # CE DATA FROM NSE
-            # ------------------------------------------
 
             call_iv_raw = self.safe_number(
                 ce.get("impliedVolatility")
             )
 
-            call_iv = self.normalize_iv(
-                call_iv_raw
-            )
+            call_iv = self.normalize_iv(call_iv_raw)
 
             call_ltp = self.safe_number(
                 ce.get("lastPrice")
@@ -531,17 +696,11 @@ class NSEOptionChainFetcher:
                 ce.get("changeinOpenInterest")
             )
 
-            # ------------------------------------------
-            # PE DATA FROM NSE
-            # ------------------------------------------
-
             put_iv_raw = self.safe_number(
                 pe.get("impliedVolatility")
             )
 
-            put_iv = self.normalize_iv(
-                put_iv_raw
-            )
+            put_iv = self.normalize_iv(put_iv_raw)
 
             put_ltp = self.safe_number(
                 pe.get("lastPrice")
@@ -555,47 +714,25 @@ class NSEOptionChainFetcher:
                 pe.get("changeinOpenInterest")
             )
 
-            # ------------------------------------------
-            # CE DELTA AND GAMMA
-            # ------------------------------------------
-
             call_delta, call_gamma = BlackScholes.calculate(
 
                 spot=underlying_price,
-
                 strike=strike,
-
                 iv=call_iv,
-
                 time_years=time_years,
-
                 risk_free_rate=risk_free_rate,
-
                 option_type="CE"
             )
-
-            # ------------------------------------------
-            # PE DELTA AND GAMMA
-            # ------------------------------------------
 
             put_delta, put_gamma = BlackScholes.calculate(
 
                 spot=underlying_price,
-
                 strike=strike,
-
                 iv=put_iv,
-
                 time_years=time_years,
-
                 risk_free_rate=risk_free_rate,
-
                 option_type="PE"
             )
-
-            # ------------------------------------------
-            # COUNT AVAILABLE VALUES
-            # ------------------------------------------
 
             if pd.notna(call_iv):
                 ce_iv_count += 1
@@ -609,40 +746,22 @@ class NSEOptionChainFetcher:
             if pd.notna(put_delta):
                 pe_valid_count += 1
 
-            # ------------------------------------------
-            # BUILD ROW
-            # ------------------------------------------
-
             rows.append({
 
                 "Strike": strike,
 
-                # CALL
-
                 "Call_Gamma": call_gamma,
-
                 "Call_Delta": call_delta,
-
                 "Call_OI": call_oi,
-
                 "Call_Change_OI": call_change_oi,
-
                 "Call_LTP": call_ltp,
-
                 "Call_IV": call_iv_raw,
 
-                # PUT
-
                 "Put_IV": put_iv_raw,
-
                 "Put_LTP": put_ltp,
-
                 "Put_Change_OI": put_change_oi,
-
                 "Put_OI": put_oi,
-
                 "Put_Delta": put_delta,
-
                 "Put_Gamma": put_gamma
 
             })
@@ -659,34 +778,22 @@ class NSEOptionChainFetcher:
             "Strike"
         ).reset_index(drop=True)
 
-        # ----------------------------------------------
-        # ATM SELECTION
-        # ----------------------------------------------
-
         atm_idx = (
             df["Strike"] - underlying_price
         ).abs().idxmin()
 
-        start_idx = max(
-            0,
-            atm_idx - 10
-        )
-
-        end_idx = min(
-            len(df),
-            atm_idx + 11
-        )
+        start_idx = max(0, atm_idx - 10)
+        end_idx = min(len(df), atm_idx + 11)
 
         df = df.iloc[
             start_idx:end_idx
         ].copy().reset_index(drop=True)
 
-        # ----------------------------------------------
+        # --------------------------------------------------
         # REVERSAL CALCULATION
-        # ----------------------------------------------
+        # --------------------------------------------------
 
         df["Call_Rev"] = np.nan
-
         df["Put_Rev"] = np.nan
 
         for i in range(len(df)):
@@ -695,25 +802,11 @@ class NSEOptionChainFetcher:
 
             if i > 0:
 
-                call_delta = df.loc[
-                    i,
-                    "Call_Delta"
-                ]
+                call_delta = df.loc[i, "Call_Delta"]
+                put_delta = df.loc[i - 1, "Put_Delta"]
 
-                put_delta = df.loc[
-                    i - 1,
-                    "Put_Delta"
-                ]
-
-                call_ltp = df.loc[
-                    i,
-                    "Call_LTP"
-                ]
-
-                put_ltp = df.loc[
-                    i - 1,
-                    "Put_LTP"
-                ]
+                call_ltp = df.loc[i, "Call_LTP"]
+                put_ltp = df.loc[i - 1, "Put_LTP"]
 
                 if all(
                     pd.notna(x)
@@ -726,16 +819,12 @@ class NSEOptionChainFetcher:
                     ]
                 ):
 
-                    denominator = (
-                        call_delta - put_delta
-                    )
+                    denominator = call_delta - put_delta
 
                     if denominator != 0:
 
                         df.loc[i, "Put_Rev"] = (
-
                             underlying_price
-
                             - (
                                 (call_ltp - put_ltp)
                                 / denominator
@@ -746,25 +835,11 @@ class NSEOptionChainFetcher:
 
             if i + 1 < len(df):
 
-                call_delta = df.loc[
-                    i,
-                    "Call_Delta"
-                ]
+                call_delta = df.loc[i, "Call_Delta"]
+                put_delta = df.loc[i + 1, "Put_Delta"]
 
-                put_delta = df.loc[
-                    i + 1,
-                    "Put_Delta"
-                ]
-
-                call_ltp = df.loc[
-                    i,
-                    "Call_LTP"
-                ]
-
-                put_ltp = df.loc[
-                    i + 1,
-                    "Put_LTP"
-                ]
+                call_ltp = df.loc[i, "Call_LTP"]
+                put_ltp = df.loc[i + 1, "Put_LTP"]
 
                 if all(
                     pd.notna(x)
@@ -777,16 +852,12 @@ class NSEOptionChainFetcher:
                     ]
                 ):
 
-                    denominator = (
-                        call_delta - put_delta
-                    )
+                    denominator = call_delta - put_delta
 
                     if denominator != 0:
 
                         df.loc[i, "Call_Rev"] = (
-
                             underlying_price
-
                             - (
                                 (call_ltp - put_ltp)
                                 / denominator
@@ -804,19 +875,9 @@ class NSEOptionChainFetcher:
             option_records
         )
 
-    # --------------------------------------------------
-    # FETCH ALL DATA
-    # --------------------------------------------------
+    def fetch_data(self, expiry, risk_free_rate):
 
-    def fetch_data(
-        self,
-        expiry,
-        risk_free_rate
-    ):
-
-        option_raw = self.fetch_option_chain(
-            expiry
-        )
+        option_raw = self.fetch_option_chain(expiry)
 
         return self.process_option_chain(
             option_raw,
@@ -869,45 +930,47 @@ def style_option_chain(df, spot_price):
             if col.startswith("Call "):
 
                 if strike < spot_price:
-
-                    styles[i] = (
-                        "background-color: #e2f0d9;"
-                    )
+                    styles[i] = "background-color: #e2f0d9;"
 
                 elif strike > spot_price:
-
-                    styles[i] = (
-                        "background-color: #ddebf7;"
-                    )
+                    styles[i] = "background-color: #ddebf7;"
 
             elif col.startswith("Put "):
 
                 if strike > spot_price:
-
-                    styles[i] = (
-                        "background-color: #e2f0d9;"
-                    )
+                    styles[i] = "background-color: #e2f0d9;"
 
                 elif strike < spot_price:
-
-                    styles[i] = (
-                        "background-color: #ddebf7;"
-                    )
+                    styles[i] = "background-color: #ddebf7;"
 
         return styles
+
+    # Reversal columns will display whole numbers.
+    # All other columns retain two decimal places.
+
+    format_dict = {}
+
+    for col in df.columns:
+
+        if col == strike_col:
+            continue
+
+        if col in ("Call Rev", "Put Rev"):
+
+            format_dict[col] = "{:.0f}"
+
+        else:
+
+            format_dict[col] = "{:.2f}"
+
+    format_dict[strike_col] = "{:.0f}"
 
     return df.style.apply(
         apply_styles,
         axis=1
     ).format(
-        {
-            col: "{:.2f}"
-            for col in df.columns
-            if col != strike_col
-        },
+        format_dict,
         na_rep="-"
-    ).format(
-        {strike_col: "{:.0f}"}
     )
 
 
@@ -949,17 +1012,108 @@ show_debug = st.sidebar.checkbox(
     value=False
 )
 
-risk_free_rate_percent = st.sidebar.number_input(
-    "Risk-Free Interest Rate (%)",
-    min_value=0.0,
-    max_value=20.0,
-    value=6.5,
-    step=0.25
+
+# ======================================================
+# AUTOMATIC RBI RATE
+# ======================================================
+
+st.sidebar.subheader(
+    "Risk-Free Interest Rate"
 )
 
-risk_free_rate = (
-    risk_free_rate_percent / 100
+try:
+
+    rbi_result = RBIYieldFetcher.get_latest_yield()
+
+    risk_free_rate_percent = rbi_result["rate"]
+
+    risk_free_rate_date = rbi_result["date"]
+
+    st.session_state["last_rbi_rate"] = (
+        risk_free_rate_percent
+    )
+
+    st.session_state["last_rbi_date"] = (
+        risk_free_rate_date
+    )
+
+    st.session_state["rbi_rate_source"] = (
+        rbi_result["source"]
+    )
+
+    st.session_state["rbi_rate_status"] = "live"
+
+except Exception as rbi_error:
+
+    if "last_rbi_rate" in st.session_state:
+
+        risk_free_rate_percent = (
+            st.session_state["last_rbi_rate"]
+        )
+
+        risk_free_rate_date = (
+            st.session_state["last_rbi_date"]
+        )
+
+        st.session_state["rbi_rate_status"] = "cached"
+
+    else:
+
+        # Temporary fallback only when no RBI rate
+        # has ever been retrieved in this session.
+
+        risk_free_rate_percent = 6.50
+
+        risk_free_rate_date = None
+
+        st.session_state["rbi_rate_status"] = "fallback"
+
+        st.session_state["rbi_rate_error"] = str(
+            rbi_error
+        )
+
+
+risk_free_rate = risk_free_rate_percent / 100.0
+
+st.sidebar.metric(
+    "91-Day T-Bill Yield",
+    f"{risk_free_rate_percent:.4f}%"
 )
+
+if risk_free_rate_date:
+
+    st.sidebar.caption(
+        f"RBI Auction Date: {risk_free_rate_date.strftime('%d-%m-%Y')}"
+    )
+
+else:
+
+    st.sidebar.caption(
+        "RBI Rate Date: Not Available"
+    )
+
+if st.session_state["rbi_rate_status"] == "live":
+
+    st.sidebar.success(
+        "Latest available RBI rate loaded"
+    )
+
+elif st.session_state["rbi_rate_status"] == "cached":
+
+    st.sidebar.warning(
+        "RBI unavailable. Using previously fetched rate."
+    )
+
+else:
+
+    st.sidebar.error(
+        "RBI rate unavailable. Temporary fallback: 6.50%"
+    )
+
+
+# ======================================================
+# NSE DATA FETCH
+# ======================================================
 
 fetcher = NSEOptionChainFetcher(symbol)
 
@@ -1017,9 +1171,49 @@ try:
     )
 
     col4.metric(
-        "Calculated Strikes",
+        "Calculated Option Sides",
         ce_valid_count + pe_valid_count
     )
+
+    # --------------------------------------------------
+    # RBI RATE INFORMATION
+    # --------------------------------------------------
+
+    r1, r2 = st.columns(2)
+
+    r1.metric(
+        "Risk-Free Rate",
+        f"{risk_free_rate_percent:.4f}%"
+    )
+
+    if risk_free_rate_date:
+
+        r2.metric(
+            "RBI Auction Date",
+            risk_free_rate_date.strftime("%d-%m-%Y")
+        )
+
+    else:
+
+        r2.metric(
+            "RBI Auction Date",
+            "Not Available"
+        )
+
+    if st.session_state["rbi_rate_status"] == "fallback":
+
+        st.warning(
+            "RBI कडून 91-Day T-Bill Yield मिळाला नाही. "
+            "त्यामुळे सध्या तात्पुरता 6.50% दर वापरला आहे. "
+            "हा अधिकृत RBI दर नाही."
+        )
+
+    elif st.session_state["rbi_rate_status"] == "cached":
+
+        st.info(
+            "RBI कनेक्शन उपलब्ध नसल्यामुळे आधी मिळालेला "
+            "शेवटचा दर वापरला जात आहे."
+        )
 
     # --------------------------------------------------
     # CALCULATION COUNTS
@@ -1083,33 +1277,21 @@ try:
     display_names = {
 
         "Call_Gamma": "Call Gamma",
-
         "Call_Delta": "Call Delta",
-
         "Call_OI": "Call OI",
-
         "Call_Change_OI": "Call Change OI",
-
         "Call_LTP": "Call LTP",
-
         "Call_IV": "Call IV",
-
         "Call_Rev": "Call Rev",
 
         "Strike": "Strike Price",
 
         "Put_Rev": "Put Rev",
-
         "Put_IV": "Put IV",
-
         "Put_LTP": "Put LTP",
-
         "Put_Change_OI": "Put Change OI",
-
         "Put_OI": "Put OI",
-
         "Put_Delta": "Put Delta",
-
         "Put_Gamma": "Put Gamma"
 
     }
@@ -1132,7 +1314,7 @@ try:
     )
 
     # --------------------------------------------------
-    # CALCULATION DEBUG INFORMATION
+    # DEBUG INFORMATION
     # --------------------------------------------------
 
     if show_debug:
@@ -1153,7 +1335,17 @@ try:
 
         st.write(
             "Risk-Free Interest Rate:",
-            f"{risk_free_rate_percent:.2f}%"
+            f"{risk_free_rate_percent:.4f}%"
+        )
+
+        st.write(
+            "RBI Rate Date:",
+            risk_free_rate_date
+        )
+
+        st.write(
+            "RBI Rate Status:",
+            st.session_state["rbi_rate_status"]
         )
 
         st.write(
@@ -1200,6 +1392,11 @@ try:
         "ATM: Light Yellow and Bold | "
         "ITM: Light Green | OTM: Light Blue | "
         "Greeks: Black-Scholes Calculation"
+    )
+
+    st.caption(
+        "Call Rev and Put Rev are displayed as whole numbers. "
+        "Their calculations retain full precision."
     )
 
     st.caption(
