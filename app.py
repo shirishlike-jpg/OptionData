@@ -215,74 +215,73 @@ class NSEOptionChainFetcher:
         expiry
     ):
 
-        records_obj = option_raw.get("records") or {}
-filtered_obj = option_raw.get("filtered") or {}
+    records_obj = option_raw.get("records") or {}
+    filtered_obj = option_raw.get("filtered") or {}
 
-# Validate Spot Price
-spot_price = pd.to_numeric(
-    records_obj.get("underlyingValue"),
-    errors="coerce"
-)
-
-if pd.isna(spot_price) or spot_price <= 0:
-    raise ValueError(
-        "NSE कडून योग्य Spot Price मिळाली नाही."
-    )
-
-spot_price = float(spot_price)
-
-# Get Option Chain Data
-option_data = records_obj.get("data") or []
-
-selected_expiry = self.normalize_expiry(expiry)
-
-# Filter selected expiry
-filtered_data = []
-
-for item in option_data:
-
-    item_expiry = self.normalize_expiry(
-        item.get("expiryDate")
-    )
-
-    if item_expiry == selected_expiry:
-        filtered_data.append(item)
-
-# Fallback: Check filtered.data
-if not filtered_data:
-
-    api_filtered_data = filtered_obj.get("data") or []
-
-    for item in api_filtered_data:
-
-        item_expiry = self.normalize_expiry(
-            item.get("expiryDate")
+        # Validate Spot Price
+        spot_price = pd.to_numeric(
+            records_obj.get("underlyingValue"),
+            errors="coerce"
         )
 
-        # filtered.data may already be filtered by NSE
-        if item_expiry is None or item_expiry == selected_expiry:
-            filtered_data.append(item)
+        if pd.isna(spot_price) or spot_price <= 0:
+            raise ValueError(
+                "NSE कडून योग्य Spot Price मिळाली नाही."
+            )
 
-# If still empty, show actual API information
-if not filtered_data:
+        spot_price = float(spot_price)
 
-    available_expiries = sorted(set(
-        str(item.get("expiryDate"))
-        for item in option_data
-        if item.get("expiryDate") is not None
-    ))
+        # Get Option Chain Data
+        option_data = records_obj.get("data") or []
 
-    print("Selected Expiry:", expiry)
-    print("Normalized Expiry:", selected_expiry)
-    print("Option API Keys:", list(option_raw.keys()))
-    print("Records Keys:", list(records_obj.keys()))
-    print("Available Expiries:", available_expiries)
+        selected_expiry = self.normalize_expiry(expiry)
 
-    raise ValueError(
-        f"निवडलेल्या Expiry साठी डेटा मिळाला नाही. "
-        f"Selected: {expiry}. "
-        f"Available Expiries: {available_expiries}"
-    )
+        # Filter selected expiry
+        filtered_data = []
+
+        for item in option_data:
+
+            item_expiry = self.normalize_expiry(
+                item.get("expiryDate")
+            )
+
+            if item_expiry == selected_expiry:
+                filtered_data.append(item)
+
+        # Fallback: Check filtered.data
+        if not filtered_data:
+
+            api_filtered_data = filtered_obj.get("data") or []
+
+            for item in api_filtered_data:
+
+                item_expiry = self.normalize_expiry(
+                    item.get("expiryDate")
+                )
+
+                if item_expiry is None or item_expiry == selected_expiry:
+                    filtered_data.append(item)
+
+        # If still empty
+        if not filtered_data:
+
+            available_expiries = sorted(set(
+                str(item.get("expiryDate"))
+                for item in option_data
+                if item.get("expiryDate") is not None
+            ))
+
+            print("Selected Expiry:", expiry)
+            print("Normalized Expiry:", selected_expiry)
+            print("Option API Keys:", list(option_raw.keys()))
+            print("Records Keys:", list(records_obj.keys()))
+            print("Available Expiries:", available_expiries)
+
+            raise ValueError(
+                f"निवडलेल्या Expiry साठी डेटा मिळाला नाही. "
+                f"Selected: {expiry}. "
+                f"Available Expiries: {available_expiries}"
+            )
 
         # --------------------------------------------------
         # FILTER EXPIRY
