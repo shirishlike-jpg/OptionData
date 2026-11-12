@@ -36,17 +36,30 @@ class NSEOptionChainFetcher:
         self.session.headers.update(self.headers)
         self._init_cookies()
 
-    def _init_cookies(self):
-        try:
-            self.session.get(self.base_url, timeout=15)
-            time.sleep(1)
-            self.session.get(
-                f"{self.base_url}/option-chain",
-                timeout=15
+   def _init_cookies(self):
+    try:
+        pages = [
+            self.base_url,
+            f"{self.base_url}/option-chain",
+            f"{self.base_url}/market-data/option-greek"
+        ]
+
+        for page in pages:
+            response = self.session.get(
+                page,
+                timeout=20
             )
+            print("NSE Page:", page)
+            print("Status:", response.status_code)
             time.sleep(1)
-        except requests.RequestException:
-            pass
+
+        print(
+            "Cookie Names:",
+            list(self.session.cookies.keys())
+        )
+
+    except requests.RequestException as e:
+        print("NSE Cookie Error:", str(e))
 
     @staticmethod
     def normalize_expiry(value):
