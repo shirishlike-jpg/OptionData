@@ -543,6 +543,7 @@ try:
             "Greeks मिळाले नाहीत."
         )
 
+    
     # ---------------- DISPLAY TABLE ----------------
 
     display_df = df[[
@@ -598,43 +599,108 @@ try:
             errors="coerce"
         ).round(0).astype("Int64")
 
+    # ---------------- ATM / ITM / OTM STYLING ----------------
+
+    atm_idx = (
+        (df["Strike"] - spot_price).abs()
+    ).idxmin()
+
+    atm_strike = df.loc[atm_idx, "Strike"]
+
+    def style_option_chain(data):
+
+        styles = pd.DataFrame(
+            "",
+            index=data.index,
+            columns=data.columns
+        )
+
+        call_columns = [
+            "CALL Gamma",
+            "CALL Delta",
+            "CALL OI",
+            "CALL Change In OI",
+            "CALL LTP",
+            "CALL IV",
+            "Call Rev LTP/Spot"
+        ]
+
+        put_columns = [
+            "Put Rev LTP/Spot",
+            "PUT IV",
+            "PUT LTP",
+            "PUT Change In OI",
+            "PUT OI",
+            "Put Delta",
+            "Put Gamma"
+        ]
+
+        for idx in data.index:
+
+            strike = float(data.loc[idx, "SP"])
+
+            # ATM ROW
+            if strike == atm_strike:
+
+                styles.loc[idx, :] = (
+                    "font-weight: bold; "
+                    "background-color: #fff2cc;"
+                )
+
+            else:
+
+                # CALL ITM / OTM
+                if strike < spot_price:
+                    call_color = "#e8f5e9"  # Light Green - ITM
+                else:
+                    call_color = "#e3f2fd"  # Light Blue - OTM
+
+                # PUT ITM / OTM
+                if strike > spot_price:
+                    put_color = "#e8f5e9"   # Light Green - ITM
+                else:
+                    put_color = "#e3f2fd"   # Light Blue - OTM
+
+                for col in call_columns:
+                    styles.loc[idx, col] = (
+                        f"background-color: {call_color};"
+                    )
+
+                for col in put_columns:
+                    styles.loc[idx, col] = (
+                        f"background-color: {put_color};"
+                    )
+
+        return styles
+
+    styled_df = display_df.style.apply(
+        style_option_chain,
+        axis=None
+    ).format({
+
+        "CALL Gamma": "{:.4f}",
+        "CALL Delta": "{:.4f}",
+        "CALL OI": "{:,.0f}",
+        "CALL Change In OI": "{:,.0f}",
+        "CALL LTP": "{:.2f}",
+        "CALL IV": "{:.2f}",
+        "PUT IV": "{:.2f}",
+        "PUT LTP": "{:.2f}",
+        "PUT Change In OI": "{:,.0f}",
+        "PUT OI": "{:,.0f}",
+        "Put Delta": "{:.4f}",
+        "Put Gamma": "{:.4f}"
+
+    }, na_rep="")
+
     st.dataframe(
 
-        display_df.style.format({
-
-            "CALL Gamma": "{:.4f}",
-            "CALL Delta": "{:.4f}",
-            "CALL OI": "{:,.0f}",
-            "CALL Change In OI": "{:,.0f}",
-            "CALL LTP": "{:.2f}",
-            "CALL IV": "{:.2f}",
-            "PUT IV": "{:.2f}",
-            "PUT LTP": "{:.2f}",
-            "PUT Change In OI": "{:,.0f}",
-            "PUT OI": "{:,.0f}",
-            "Put Delta": "{:.4f}",
-            "Put Gamma": "{:.4f}"
-
-        }, na_rep=""),
-
+        styled_df,
         use_container_width=True,
         hide_index=True
+
     )
 
-    st.caption(
-        "LTP, OI, Change in OI आणि IV हे Option Chain API मधून घेतले आहेत. "
-        "Delta, Gamma, Theta आणि Vega हे Option Greek API मधून घेतले आहेत."
-    )
-
-except Exception as e:
-
-    st.error(
-        "NSE डेटा मिळवताना अडचण आली. काही वेळाने पुन्हा प्रयत्न करा."
-    )
-
-    st.caption(
-        f"तांत्रिक तपशील: {e}"
-    )
 
 
 # ---------------- AUTO REFRESH ----------------
