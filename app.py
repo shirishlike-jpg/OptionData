@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import requests
 import time
-
+import traceback
 
 st.set_page_config(
     page_title="NSE Option Chain & Reversal Dashboard",
@@ -431,10 +431,11 @@ try:
     )
 
 except Exception as e:
-    st.error(
-        "NSE डेटा मिळवताना अडचण आली. काही वेळाने पुन्हा प्रयत्न करा."
-    )
-    st.caption(f"तांत्रिक तपशील: {e}")
+    st.error("NSE डेटा मिळवताना अडचण आली.")
+
+    st.error(f"Error: {e}")
+
+    st.code(traceback.format_exc())
 
 # Auto-refresh is optional. It is disabled by default to avoid
 # continuously sending requests to NSE when the dashboard is not in use.
