@@ -15,6 +15,7 @@ st.set_page_config(
 class NSEOptionChainFetcher:
 
     def __init__(self, symbol="NIFTY"):
+
         self.symbol = symbol.upper()
         self.base_url = "https://www.nseindia.com"
 
@@ -50,17 +51,22 @@ class NSEOptionChainFetcher:
         ]
 
         for url in urls:
+
             try:
+
                 response = self.session.get(
                     url,
                     timeout=15
                 )
+
                 print(
                     "Cookie URL:",
                     url,
                     response.status_code
                 )
+
             except Exception as e:
+
                 print("Cookie Error:", e)
 
     # --------------------------------------------------
@@ -71,6 +77,7 @@ class NSEOptionChainFetcher:
     def safe_number(value):
 
         try:
+
             number = pd.to_numeric(
                 value,
                 errors="coerce"
@@ -87,6 +94,7 @@ class NSEOptionChainFetcher:
             return number
 
         except Exception:
+
             return np.nan
 
     # --------------------------------------------------
@@ -97,6 +105,7 @@ class NSEOptionChainFetcher:
     def normalize_expiry(value):
 
         try:
+
             date_value = pd.to_datetime(
                 value,
                 errors="coerce",
@@ -109,6 +118,7 @@ class NSEOptionChainFetcher:
             return date_value.strftime("%Y-%m-%d")
 
         except Exception:
+
             return None
 
     # --------------------------------------------------
@@ -197,8 +207,15 @@ class NSEOptionChainFetcher:
             timeout=25
         )
 
-        print("Greek API Status:", response.status_code)
-        print("Greek API Content:", response.text[:500])
+        print(
+            "Greek API Status:",
+            response.status_code
+        )
+
+        print(
+            "Greek API Content:",
+            response.text[:500]
+        )
 
         response.raise_for_status()
 
@@ -215,30 +232,41 @@ class NSEOptionChainFetcher:
         expiry
     ):
 
-    records_obj = option_raw.get("records") or {}
-    filtered_obj = option_raw.get("filtered") or {}
+        # --------------------------------------------------
+        # GET API DATA
+        # --------------------------------------------------
 
-        # Validate Spot Price
+        records_obj = option_raw.get("records") or {}
+        filtered_obj = option_raw.get("filtered") or {}
+
+        # --------------------------------------------------
+        # SPOT PRICE
+        # --------------------------------------------------
+
         spot_price = pd.to_numeric(
             records_obj.get("underlyingValue"),
             errors="coerce"
         )
 
         if pd.isna(spot_price) or spot_price <= 0:
+
             raise ValueError(
                 "NSE कडून योग्य Spot Price मिळाली नाही."
             )
 
         spot_price = float(spot_price)
 
-        # Get Option Chain Data
+        # --------------------------------------------------
+        # GET OPTION CHAIN DATA
+        # --------------------------------------------------
+
         option_data = records_obj.get("data") or []
 
         selected_expiry = self.normalize_expiry(expiry)
 
-        # Filter selected expiry
         filtered_data = []
 
+        # First check records.data
         for item in option_data:
 
             item_expiry = self.normalize_expiry(
@@ -246,9 +274,13 @@ class NSEOptionChainFetcher:
             )
 
             if item_expiry == selected_expiry:
+
                 filtered_data.append(item)
 
-        # Fallback: Check filtered.data
+        # --------------------------------------------------
+        # FALLBACK: CHECK filtered.data
+        # --------------------------------------------------
+
         if not filtered_data:
 
             api_filtered_data = filtered_obj.get("data") or []
@@ -259,10 +291,17 @@ class NSEOptionChainFetcher:
                     item.get("expiryDate")
                 )
 
-                if item_expiry is None or item_expiry == selected_expiry:
+                if (
+                    item_expiry is None
+                    or item_expiry == selected_expiry
+                ):
+
                     filtered_data.append(item)
 
-        # If still empty
+        # --------------------------------------------------
+        # CHECK OPTION DATA
+        # --------------------------------------------------
+
         if not filtered_data:
 
             available_expiries = sorted(set(
@@ -283,20 +322,15 @@ class NSEOptionChainFetcher:
                 f"Available Expiries: {available_expiries}"
             )
 
-        # --------------------------------------------------
-        # FILTER EXPIRY
-        # --------------------------------------------------
+        print(
+            "Selected Expiry:",
+            expiry
+        )
 
-        filtered_data = []
-
-        for item in option_data:
-
-            item_expiry = self.normalize_expiry(
-                item.get("expiryDate")
-            )
-
-            if item_expiry == selected_expiry:
-                filtered_data.append(item)
+        print(
+            "Option Chain Rows:",
+            len(filtered_data)
+        )
 
         # --------------------------------------------------
         # GREEK LOOKUP
@@ -313,11 +347,13 @@ class NSEOptionChainFetcher:
         for item in greek_data:
 
             try:
+
                 strike = self.safe_number(
                     item.get("strikePrice")
                 )
 
                 if pd.isna(strike):
+
                     strike = self.safe_number(
                         item.get("ogdStrikePrice")
                     )
@@ -326,12 +362,16 @@ class NSEOptionChainFetcher:
                     continue
 
                 greek_lookup[strike] = {
-                    "CE": item.get("CE", {}),
-                    "PE": item.get("PE", {})
+                    "CE": item.get("CE") or {},
+                    "PE": item.get("PE") or {}
                 }
 
             except Exception as e:
-                print("Greek Parsing Error:", e)
+
+                print(
+                    "Greek Parsing Error:",
+                    e
+                )
 
         # --------------------------------------------------
         # BUILD OPTION CHAIN ROWS
@@ -445,11 +485,17 @@ class NSEOptionChainFetcher:
 
             })
 
+        # --------------------------------------------------
+        # CREATE DATAFRAME
+        # --------------------------------------------------
+
         df = pd.DataFrame(rows)
 
         if df.empty:
+
             raise ValueError(
-                "निवडलेल्या Expiry साठी Option Chain डेटा उपलब्ध नाही."
+                "Option Chain API मधून Strike Data मिळाला नाही. "
+                "NSE API Response तपासणे आवश्यक आहे."
             )
 
         df = df.sort_values(
@@ -466,6 +512,7 @@ class NSEOptionChainFetcher:
         ]
 
         for col in numeric_columns:
+
             df[col] = pd.to_numeric(
                 df[col],
                 errors="coerce"
@@ -479,12 +526,15 @@ class NSEOptionChainFetcher:
         df["Put_Rev"] = np.nan
 
         if self.symbol == "NIFTY":
+
             strike_step = 50
 
         elif self.symbol in ["BANKNIFTY", "FINNIFTY"]:
+
             strike_step = 100
 
         else:
+
             strike_step = 50
 
         strike_lookup = df.set_index("Strike")
@@ -533,6 +583,7 @@ class NSEOptionChainFetcher:
                         )
 
                         if np.isfinite(reversal):
+
                             df.loc[i, "Call_Rev"] = reversal
 
             # ----------------------------------------------
@@ -572,6 +623,7 @@ class NSEOptionChainFetcher:
                         )
 
                         if np.isfinite(reversal):
+
                             df.loc[i, "Put_Rev"] = reversal
 
         # --------------------------------------------------
@@ -620,7 +672,10 @@ class NSEOptionChainFetcher:
 
         except Exception as e:
 
-            print("Greek Fetch Error:", e)
+            print(
+                "Greek Fetch Error:",
+                e
+            )
 
             st.warning(
                 f"Option Greeks डेटा मिळाला नाही: {e}"
@@ -649,7 +704,9 @@ st.title(
 # SIDEBAR
 # ------------------------------------------------------
 
-st.sidebar.header("Dashboard Settings")
+st.sidebar.header(
+    "Dashboard Settings"
+)
 
 symbol = st.sidebar.selectbox(
     "Select Symbol",
@@ -710,10 +767,12 @@ try:
         )
 
     # --------------------------------------------------
-    # SPOT PRICE
+    # MARKET INFORMATION
     # --------------------------------------------------
 
-    st.subheader("Market Information")
+    st.subheader(
+        "Market Information"
+    )
 
     col1, col2, col3 = st.columns(3)
 
@@ -780,23 +839,23 @@ try:
     display_df = display_df.rename(
         columns={
 
-            "Call_Gamma": "Gamma",
-            "Call_Delta": "Delta",
-            "Call_OI": "OI",
-            "Call_Change_OI": "Change OI",
-            "Call_LTP": "LTP",
-            "Call_IV": "IV",
+            "Call_Gamma": "Call Gamma",
+            "Call_Delta": "Call Delta",
+            "Call_OI": "Call OI",
+            "Call_Change_OI": "Call Change OI",
+            "Call_LTP": "Call LTP",
+            "Call_IV": "Call IV",
             "Call_Rev": "Call Rev",
 
             "Strike": "SP",
 
             "Put_Rev": "Put Rev",
-            "Put_IV": "IV",
-            "Put_LTP": "LTP",
-            "Put_Change_OI": "Change OI",
-            "Put_OI": "OI",
-            "Put_Delta": "Delta",
-            "Put_Gamma": "Gamma"
+            "Put_IV": "Put IV",
+            "Put_LTP": "Put LTP",
+            "Put_Change_OI": "Put Change OI",
+            "Put_OI": "Put OI",
+            "Put_Delta": "Put Delta",
+            "Put_Gamma": "Put Gamma"
 
         }
     )
@@ -806,15 +865,21 @@ try:
     # --------------------------------------------------
 
     display_df["SP"] = (
-        display_df["SP"].round(0).astype("Int64")
+        display_df["SP"]
+        .round(0)
+        .astype("Int64")
     )
 
     display_df["Call Rev"] = (
-        display_df["Call Rev"].round(0).astype("Int64")
+        display_df["Call Rev"]
+        .round(0)
+        .astype("Int64")
     )
 
     display_df["Put Rev"] = (
-        display_df["Put Rev"].round(0).astype("Int64")
+        display_df["Put Rev"]
+        .round(0)
+        .astype("Int64")
     )
 
     # --------------------------------------------------
@@ -828,6 +893,26 @@ try:
             index=data.index,
             columns=data.columns
         )
+
+        call_columns = [
+            "Call Gamma",
+            "Call Delta",
+            "Call OI",
+            "Call Change OI",
+            "Call LTP",
+            "Call IV",
+            "Call Rev"
+        ]
+
+        put_columns = [
+            "Put Rev",
+            "Put IV",
+            "Put LTP",
+            "Put Change OI",
+            "Put OI",
+            "Put Delta",
+            "Put Gamma"
+        ]
 
         for idx in data.index:
 
@@ -856,58 +941,26 @@ try:
                 # CALL ITM / OTM
                 if strike < spot_price:
 
-                    styles.loc[idx, [
-                        "Gamma",
-                        "Delta",
-                        "OI",
-                        "Change OI",
-                        "LTP",
-                        "IV",
-                        "Call Rev"
-                    ]] = (
+                    styles.loc[idx, call_columns] = (
                         "background-color: #e8f5e9;"
                     )
 
                 else:
 
-                    styles.loc[idx, [
-                        "Gamma",
-                        "Delta",
-                        "OI",
-                        "Change OI",
-                        "LTP",
-                        "IV",
-                        "Call Rev"
-                    ]] = (
+                    styles.loc[idx, call_columns] = (
                         "background-color: #e3f2fd;"
                     )
 
                 # PUT ITM / OTM
                 if strike > spot_price:
 
-                    styles.loc[idx, [
-                        "Put Rev",
-                        "IV",
-                        "LTP",
-                        "Change OI",
-                        "OI",
-                        "Delta",
-                        "Gamma"
-                    ]] = (
+                    styles.loc[idx, put_columns] = (
                         "background-color: #e8f5e9;"
                     )
 
                 else:
 
-                    styles.loc[idx, [
-                        "Put Rev",
-                        "IV",
-                        "LTP",
-                        "Change OI",
-                        "OI",
-                        "Delta",
-                        "Gamma"
-                    ]] = (
+                    styles.loc[idx, put_columns] = (
                         "background-color: #e3f2fd;"
                     )
 
