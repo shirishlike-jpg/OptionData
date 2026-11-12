@@ -87,13 +87,12 @@ class NSEOptionChainFetcher:
         response.raise_for_status()
 
         try:
-
             return response.json()
 
         except ValueError:
 
             raise ValueError(
-                "NSE कडून JSON ऐवजी HTML किंवा चुकीचा डेटा मिळाला. "
+                "NSE कडून JSON डेटा मिळाला नाही. "
                 f"HTTP Status: {response.status_code}. "
                 f"Response: {response.text[:500]}"
             )
@@ -115,13 +114,9 @@ class NSEOptionChainFetcher:
 
             result = float(value)
 
-            if np.isfinite(result):
-                return result
-
-            return np.nan
+            return result if np.isfinite(result) else np.nan
 
         except (TypeError, ValueError):
-
             return np.nan
 
     @staticmethod
@@ -129,6 +124,21 @@ class NSEOptionChainFetcher:
 
         if not value:
             return None
+
+        for fmt in (
+            "%d-%m-%Y",
+            "%d-%b-%Y",
+            "%Y-%m-%d"
+        ):
+
+            parsed = pd.to_datetime(
+                value,
+                format=fmt,
+                errors="coerce"
+            )
+
+            if not pd.isna(parsed):
+                return parsed.strftime("%Y-%m-%d")
 
         parsed = pd.to_datetime(
             value,
@@ -172,84 +182,38 @@ class NSEOptionChainFetcher:
         if not isinstance(raw_data, dict):
 
             raise ValueError(
-                "Expiry API कडून योग्य JSON Dictionary मिळाली नाही. "
-                f"Response: {str(raw_data)[:1000]}"
+                "Expiry API कडून चुकीचा Response मिळाला."
             )
 
-        # Primary response structure
         expiry_dates = raw_data.get(
             "expiryDates",
             []
         )
 
-        # Alternative response structures
         if not expiry_dates:
 
-            records = raw_data.get(
-                "records",
-                {}
-            )
+            records = raw_data.get("records", {})
 
             if isinstance(records, dict):
-
-                expiry_dates = records.get(
-                    "expiryDates",
-                    []
-                )
+                expiry_dates = records.get("expiryDates", [])
 
         if not expiry_dates:
 
-            filtered = raw_data.get(
-                "filtered",
-                {}
-            )
+            filtered = raw_data.get("filtered", {})
 
             if isinstance(filtered, dict):
-
-                expiry_dates = filtered.get(
-                    "expiryDates",
-                    []
-                )
-
-        if not expiry_dates:
-
-            data = raw_data.get(
-                "data",
-                {}
-            )
-
-            if isinstance(data, dict):
-
-                expiry_dates = data.get(
-                    "expiryDates",
-                    []
-                )
+                expiry_dates = filtered.get("expiryDates", [])
 
         if not expiry_dates:
 
             raise ValueError(
                 "NSE API मधून Expiry Dates मिळाल्या नाहीत. "
-                f"NSE Response: {str(raw_data)[:1500]}"
+                f"Response: {str(raw_data)[:1000]}"
             )
 
-        # Remove invalid and duplicate dates
-        expiry_dates = [
-            str(x)
-            for x in expiry_dates
-            if x
-        ]
-
-        expiry_dates = list(
-            dict.fromkeys(expiry_dates)
-        )
-
-        if not expiry_dates:
-
-            raise ValueError(
-                "Expiry Dates ची यादी रिकामी आहे."
-            )
-
-        return expiry_dates
+        return list(dict.fromkeys(
+            str(x) for x in expiry_dates if x
+        ))
 
     # --------------------------------------------------
     # OPTION CHAIN API
@@ -281,7 +245,7 @@ class NSEOptionChainFetcher:
         return self._get_json(url)
 
     # --------------------------------------------------
-    # GREEK DATA NORMALIZATION
+    # NORMALIZE GREEK DATA
     # --------------------------------------------------
 
     def normalize_greek_side(self, side):
@@ -322,13 +286,7 @@ class NSEOptionChainFetcher:
             "iv": self.safe_number(
                 self.get_first_value(
                     side,
-                    [
-                        "ogdIv",
-                        "ogdIV",
-                        "impliedVolatility",
-                        "iv",
-                        "IV"
-                    ]
+                    ["ogdIv", "ogdIV", "impliedVolatility", "iv", "IV"]
                 )
             ),
 
@@ -336,6 +294,7 @@ class NSEOptionChainFetcher:
                 self.get_first_value(
                     side,
                     [
+                        "ogdTradePrice",
                         "ogdLtp",
                         "lastPrice",
                         "ltp",
@@ -344,6 +303,10 @@ class NSEOptionChainFetcher:
                 )
             )
         }
+
+    # --------------------------------------------------
+    # BUILD GREEK LOOKUP
+    # --------------------------------------------------
 
     def build_greek_lookup(self, greek_raw, expiry):
 
@@ -354,55 +317,44 @@ class NSEOptionChainFetcher:
 
         data = greek_raw.get("data", [])
 
-        # Handle different API structures
         if isinstance(data, dict):
 
-            found = False
-
-            for key in [
-                "records",
-                "result",
-                "items",
-                "data"
-            ]:
+            for key in ["records", "result", "items", "data"]:
 
                 if isinstance(data.get(key), list):
-
                     data = data[key]
-                    found = True
                     break
 
-            if not found:
+            else:
                 data = list(data.values())
 
-        elif not isinstance(data, list):
+        if not isinstance(data, list):
+            return greek_lookup
 
-            data = []
-
-        selected_expiry = self.normalize_expiry(
-            expiry
-        )
+        selected_expiry = self.normalize_expiry(expiry)
 
         for item in data:
 
             if not isinstance(item, dict):
                 continue
 
-            strike = self.get_first_value(
-                item,
-                [
-                    "strikePrice",
-                    "ogdStrikePrice",
-                    "strike",
-                    "strike_price"
-                ]
+            # Strike Price
+            strike = self.safe_number(
+                self.get_first_value(
+                    item,
+                    [
+                        "strikePrice",
+                        "ogdStrikePrice",
+                        "strike",
+                        "strike_price"
+                    ]
+                )
             )
-
-            strike = self.safe_number(strike)
 
             if pd.isna(strike):
                 continue
 
+            # Expiry validation
             item_expiry = self.get_first_value(
                 item,
                 [
@@ -414,56 +366,27 @@ class NSEOptionChainFetcher:
 
             if not pd.isna(item_expiry):
 
-                normalized_item_expiry = (
-                    self.normalize_expiry(item_expiry)
+                normalized_expiry = self.normalize_expiry(
+                    item_expiry
                 )
 
                 if (
-                    normalized_item_expiry
-                    and normalized_item_expiry != selected_expiry
+                    normalized_expiry
+                    and normalized_expiry != selected_expiry
                 ):
                     continue
 
-            ce = item.get("CE")
-            pe = item.get("PE")
+            # NSE nested CE / PE structure
+            ce = item.get("CE", {})
+            pe = item.get("PE", {})
 
-            # Nested CE / PE format
-            if isinstance(ce, dict) or isinstance(pe, dict):
+            greek_lookup[float(strike)] = {
 
-                greek_lookup[float(strike)] = {
+                "CE": self.normalize_greek_side(ce),
 
-                    "CE": self.normalize_greek_side(ce),
-                    "PE": self.normalize_greek_side(pe)
+                "PE": self.normalize_greek_side(pe)
 
-                }
-
-                continue
-
-            # Flat CE / PE format
-            option_type = str(
-                self.get_first_value(
-                    item,
-                    [
-                        "optionType",
-                        "option_type",
-                        "type"
-                    ]
-                )
-            ).upper()
-
-            if option_type not in ["CE", "PE"]:
-                continue
-
-            if float(strike) not in greek_lookup:
-
-                greek_lookup[float(strike)] = {
-                    "CE": {},
-                    "PE": {}
-                }
-
-            greek_lookup[float(strike)][option_type] = (
-                self.normalize_greek_side(item)
-            )
+            }
 
         return greek_lookup
 
@@ -478,55 +401,27 @@ class NSEOptionChainFetcher:
         expiry
     ):
 
-        if not isinstance(option_raw, dict):
-
-            raise ValueError(
-                "Option Chain API कडून चुकीचा डेटा मिळाला."
-            )
-
-        records_obj = option_raw.get(
-            "records",
-            {}
-        )
+        records_obj = option_raw.get("records", {})
 
         if not isinstance(records_obj, dict):
             records_obj = {}
 
-        option_records = records_obj.get(
-            "data",
-            []
-        )
+        option_records = records_obj.get("data", [])
 
-        if not option_records:
+        filtered = option_raw.get("filtered", {})
 
-            filtered = option_raw.get(
-                "filtered",
-                {}
-            )
-
-            if isinstance(filtered, dict):
-
-                option_records = filtered.get(
-                    "data",
-                    []
-                )
+        if not option_records and isinstance(filtered, dict):
+            option_records = filtered.get("data", [])
 
         underlying_price = self.safe_number(
             records_obj.get("underlyingValue")
         )
 
-        if pd.isna(underlying_price):
+        if pd.isna(underlying_price) and isinstance(filtered, dict):
 
-            filtered = option_raw.get(
-                "filtered",
-                {}
+            underlying_price = self.safe_number(
+                filtered.get("underlyingValue")
             )
-
-            if isinstance(filtered, dict):
-
-                underlying_price = self.safe_number(
-                    filtered.get("underlyingValue")
-                )
 
         if not option_records:
 
@@ -534,9 +429,7 @@ class NSEOptionChainFetcher:
                 "Option Chain मध्ये डेटा उपलब्ध नाही."
             )
 
-        selected_expiry_key = self.normalize_expiry(
-            expiry
-        )
+        selected_expiry = self.normalize_expiry(expiry)
 
         greek_lookup = self.build_greek_lookup(
             greek_raw,
@@ -544,6 +437,9 @@ class NSEOptionChainFetcher:
         )
 
         rows = []
+
+        ce_valid_count = 0
+        pe_valid_count = 0
 
         for record in option_records:
 
@@ -558,7 +454,7 @@ class NSEOptionChainFetcher:
             if (
                 record_expiry
                 and self.normalize_expiry(record_expiry)
-                != selected_expiry_key
+                != selected_expiry
             ):
                 continue
 
@@ -580,20 +476,35 @@ class NSEOptionChainFetcher:
             ce_greek = greek.get("CE", {})
             pe_greek = greek.get("PE", {})
 
+            # Count actual non-null Greek values
+            if pd.notna(ce_greek.get("delta", np.nan)):
+                ce_valid_count += 1
+
+            if pd.notna(pe_greek.get("delta", np.nan)):
+                pe_valid_count += 1
+
+            # Prefer Option Chain LTP, fallback to Greek API LTP
+            call_ltp = self.safe_number(
+                ce.get("lastPrice")
+            )
+
+            if pd.isna(call_ltp):
+                call_ltp = ce_greek.get("ltp", np.nan)
+
+            put_ltp = self.safe_number(
+                pe.get("lastPrice")
+            )
+
+            if pd.isna(put_ltp):
+                put_ltp = pe_greek.get("ltp", np.nan)
+
             rows.append({
 
                 "Strike": strike,
 
-                # CALL DATA
-                "Call_Gamma": ce_greek.get(
-                    "gamma",
-                    np.nan
-                ),
-
-                "Call_Delta": ce_greek.get(
-                    "delta",
-                    np.nan
-                ),
+                # CALL
+                "Call_Gamma": ce_greek.get("gamma", np.nan),
+                "Call_Delta": ce_greek.get("delta", np.nan),
 
                 "Call_OI": self.safe_number(
                     ce.get("openInterest")
@@ -603,22 +514,23 @@ class NSEOptionChainFetcher:
                     ce.get("changeinOpenInterest")
                 ),
 
-                "Call_LTP": self.safe_number(
-                    ce.get("lastPrice")
+                "Call_LTP": call_ltp,
+
+                "Call_IV": ce_greek.get(
+                    "iv",
+                    self.safe_number(ce.get("impliedVolatility"))
                 ),
 
-                "Call_IV": self.safe_number(
-                    ce.get("impliedVolatility")
+                "Call_Theta": ce_greek.get("theta", np.nan),
+                "Call_Vega": ce_greek.get("vega", np.nan),
+
+                # PUT
+                "Put_IV": pe_greek.get(
+                    "iv",
+                    self.safe_number(pe.get("impliedVolatility"))
                 ),
 
-                # PUT DATA
-                "Put_IV": self.safe_number(
-                    pe.get("impliedVolatility")
-                ),
-
-                "Put_LTP": self.safe_number(
-                    pe.get("lastPrice")
-                ),
+                "Put_LTP": put_ltp,
 
                 "Put_Change_OI": self.safe_number(
                     pe.get("changeinOpenInterest")
@@ -628,35 +540,11 @@ class NSEOptionChainFetcher:
                     pe.get("openInterest")
                 ),
 
-                "Put_Delta": pe_greek.get(
-                    "delta",
-                    np.nan
-                ),
+                "Put_Delta": pe_greek.get("delta", np.nan),
+                "Put_Gamma": pe_greek.get("gamma", np.nan),
 
-                "Put_Gamma": pe_greek.get(
-                    "gamma",
-                    np.nan
-                ),
-
-                "Call_Theta": ce_greek.get(
-                    "theta",
-                    np.nan
-                ),
-
-                "Put_Theta": pe_greek.get(
-                    "theta",
-                    np.nan
-                ),
-
-                "Call_Vega": ce_greek.get(
-                    "vega",
-                    np.nan
-                ),
-
-                "Put_Vega": pe_greek.get(
-                    "vega",
-                    np.nan
-                )
+                "Put_Theta": pe_greek.get("theta", np.nan),
+                "Put_Vega": pe_greek.get("vega", np.nan)
 
             })
 
@@ -711,25 +599,11 @@ class NSEOptionChainFetcher:
             # PUT REVERSAL
             if i > 0:
 
-                call_delta = df.loc[
-                    i,
-                    "Call_Delta"
-                ]
+                call_delta = df.loc[i, "Call_Delta"]
+                put_delta = df.loc[i - 1, "Put_Delta"]
 
-                put_delta = df.loc[
-                    i - 1,
-                    "Put_Delta"
-                ]
-
-                call_ltp = df.loc[
-                    i,
-                    "Call_LTP"
-                ]
-
-                put_ltp = df.loc[
-                    i - 1,
-                    "Put_LTP"
-                ]
+                call_ltp = df.loc[i, "Call_LTP"]
+                put_ltp = df.loc[i - 1, "Put_LTP"]
 
                 if all(
                     pd.notna(x)
@@ -742,9 +616,7 @@ class NSEOptionChainFetcher:
                     ]
                 ):
 
-                    denominator = (
-                        call_delta - put_delta
-                    )
+                    denominator = call_delta - put_delta
 
                     if denominator != 0:
 
@@ -759,25 +631,11 @@ class NSEOptionChainFetcher:
             # CALL REVERSAL
             if i + 1 < len(df):
 
-                call_delta = df.loc[
-                    i,
-                    "Call_Delta"
-                ]
+                call_delta = df.loc[i, "Call_Delta"]
+                put_delta = df.loc[i + 1, "Put_Delta"]
 
-                put_delta = df.loc[
-                    i + 1,
-                    "Put_Delta"
-                ]
-
-                call_ltp = df.loc[
-                    i,
-                    "Call_LTP"
-                ]
-
-                put_ltp = df.loc[
-                    i + 1,
-                    "Put_LTP"
-                ]
+                call_ltp = df.loc[i, "Call_LTP"]
+                put_ltp = df.loc[i + 1, "Put_LTP"]
 
                 if all(
                     pd.notna(x)
@@ -790,9 +648,7 @@ class NSEOptionChainFetcher:
                     ]
                 ):
 
-                    denominator = (
-                        call_delta - put_delta
-                    )
+                    denominator = call_delta - put_delta
 
                     if denominator != 0:
 
@@ -808,6 +664,8 @@ class NSEOptionChainFetcher:
             df,
             underlying_price,
             len(greek_lookup),
+            ce_valid_count,
+            pe_valid_count,
             greek_raw
         )
 
@@ -817,24 +675,17 @@ class NSEOptionChainFetcher:
 
     def fetch_data(self, expiry):
 
-        option_raw = self.fetch_option_chain(
-            expiry
-        )
+        option_raw = self.fetch_option_chain(expiry)
 
         greek_error = None
 
         try:
 
-            greek_raw = self.fetch_option_greeks(
-                expiry
-            )
+            greek_raw = self.fetch_option_greeks(expiry)
 
         except Exception as e:
 
-            greek_raw = {
-                "data": []
-            }
-
+            greek_raw = {"data": []}
             greek_error = str(e)
 
         result = self.process_option_chain(
@@ -843,10 +694,7 @@ class NSEOptionChainFetcher:
             expiry
         )
 
-        return (
-            *result,
-            greek_error
-        )
+        return (*result, greek_error)
 
 
 # ======================================================
@@ -855,29 +703,24 @@ class NSEOptionChainFetcher:
 
 def style_option_chain(df, spot_price):
 
-    # Support both original and renamed column
     strike_col = (
         "Strike Price"
         if "Strike Price" in df.columns
         else "Strike"
     )
 
-    if (
-        strike_col not in df.columns
-        or pd.isna(spot_price)
-        or df.empty
-    ):
+    if df.empty or pd.isna(spot_price):
 
         return df.style.format(
             na_rep="-"
         )
 
-    atm_strike = (
+    atm_idx = (
         df[strike_col] - spot_price
     ).abs().idxmin()
 
     atm_value = df.loc[
-        atm_strike,
+        atm_idx,
         strike_col
     ]
 
@@ -887,46 +730,29 @@ def style_option_chain(df, spot_price):
 
         strike = row[strike_col]
 
-        columns = list(row.index)
-
-        # ATM ROW
         if strike == atm_value:
 
             return [
                 "background-color: #fff2cc; font-weight: bold;"
             ] * len(row)
 
-        for i, col in enumerate(columns):
+        for i, col in enumerate(row.index):
 
-            # CALL ITM / OTM
-            if col.startswith("Call_") or col.startswith("Call "):
+            if col.startswith("Call "):
 
                 if strike < spot_price:
-
-                    styles[i] = (
-                        "background-color: #e2f0d9;"
-                    )
+                    styles[i] = "background-color: #e2f0d9;"
 
                 elif strike > spot_price:
+                    styles[i] = "background-color: #ddebf7;"
 
-                    styles[i] = (
-                        "background-color: #ddebf7;"
-                    )
-
-            # PUT ITM / OTM
-            elif col.startswith("Put_") or col.startswith("Put "):
+            elif col.startswith("Put "):
 
                 if strike > spot_price:
-
-                    styles[i] = (
-                        "background-color: #e2f0d9;"
-                    )
+                    styles[i] = "background-color: #e2f0d9;"
 
                 elif strike < spot_price:
-
-                    styles[i] = (
-                        "background-color: #ddebf7;"
-                    )
+                    styles[i] = "background-color: #ddebf7;"
 
         return styles
 
@@ -941,9 +767,7 @@ def style_option_chain(df, spot_price):
         },
         na_rep="-"
     ).format(
-        {
-            strike_col: "{:.0f}"
-        }
+        {strike_col: "{:.0f}"}
     )
 
 
@@ -961,11 +785,7 @@ st.sidebar.header(
 
 symbol = st.sidebar.selectbox(
     "Select Index",
-    [
-        "NIFTY",
-        "BANKNIFTY",
-        "FINNIFTY"
-    ]
+    ["NIFTY", "BANKNIFTY", "FINNIFTY"]
 )
 
 refresh_rate = st.sidebar.slider(
@@ -985,15 +805,9 @@ show_debug = st.sidebar.checkbox(
     value=False
 )
 
-fetcher = NSEOptionChainFetcher(
-    symbol
-)
+fetcher = NSEOptionChainFetcher(symbol)
 
 try:
-
-    # --------------------------------------------------
-    # EXPIRY SELECTION
-    # --------------------------------------------------
 
     expiry_dates = fetcher.get_expiry_dates()
 
@@ -1003,10 +817,6 @@ try:
         index=0
     )
 
-    # --------------------------------------------------
-    # FETCH DATA
-    # --------------------------------------------------
-
     with st.spinner(
         "NSE मधून Option Chain आणि Greeks डेटा घेत आहे..."
     ):
@@ -1015,11 +825,11 @@ try:
             df,
             underlying_price,
             greek_count,
+            ce_valid_count,
+            pe_valid_count,
             greek_raw,
             greek_error
-        ) = fetcher.fetch_data(
-            selected_expiry
-        )
+        ) = fetcher.fetch_data(selected_expiry)
 
     # --------------------------------------------------
     # MARKET INFORMATION
@@ -1052,14 +862,31 @@ try:
     )
 
     # --------------------------------------------------
-    # GREEK STATUS
+    # GREEK COUNTS
     # --------------------------------------------------
 
-    if greek_count == 0:
+    g1, g2, g3 = st.columns(3)
+
+    g1.metric(
+        "CE Delta Available",
+        ce_valid_count
+    )
+
+    g2.metric(
+        "PE Delta Available",
+        pe_valid_count
+    )
+
+    g3.metric(
+        "Total Greek Records",
+        greek_count
+    )
+
+    if ce_valid_count == 0 and pe_valid_count == 0:
 
         st.warning(
-            "Option Chain डेटा मिळाला आहे; परंतु Greek API मधून "
-            "उपयुक्त Strike डेटा वाचता आलेला नाही."
+            "Greek API Response मिळाला आहे; परंतु CE आणि PE "
+            "Delta Values उपलब्ध नाहीत. Debug Information तपासा."
         )
 
     if greek_error:
@@ -1122,10 +949,6 @@ try:
         columns=display_names
     )
 
-    # --------------------------------------------------
-    # APPLY STYLING
-    # --------------------------------------------------
-
     styled_df = style_option_chain(
         display_df,
         underlying_price
@@ -1162,30 +985,61 @@ try:
             if isinstance(greek_data, list):
 
                 st.write(
-                    "Greek API Records:",
+                    "Total API Records:",
                     len(greek_data)
                 )
 
+                # Show records with actual Greek values
+                valid_samples = []
+
+                for item in greek_data:
+
+                    if not isinstance(item, dict):
+                        continue
+
+                    ce = item.get("CE") or {}
+                    pe = item.get("PE") or {}
+
+                    if (
+                        ce.get("ogdDelta") is not None
+                        or pe.get("ogdDelta") is not None
+                    ):
+
+                        valid_samples.append(item)
+
+                    if len(valid_samples) >= 3:
+                        break
+
                 st.write(
-                    "Greek API Sample:",
+                    "First 2 API Records:",
                     greek_data[:2]
+                )
+
+                st.write(
+                    "Records with Greek Values:",
+                    len(valid_samples)
+                )
+
+                st.write(
+                    "Sample Records with Greek Values:",
+                    valid_samples
                 )
 
             else:
 
                 st.write(
                     "Greek API Data:",
-                    str(greek_data)[:3000]
+                    str(greek_data)[:5000]
                 )
 
         else:
 
             st.write(
-                str(greek_raw)[:3000]
+                str(greek_raw)[:5000]
             )
 
     st.caption(
-        "ATM row: Light Yellow and Bold | "
+        "ATM: Light Yellow and Bold | "
         "ITM: Light Green | OTM: Light Blue"
     )
 
@@ -1206,8 +1060,6 @@ except Exception as e:
 
 if auto_refresh:
 
-    time.sleep(
-        refresh_rate
-    )
+    time.sleep(refresh_rate)
 
     st.rerun()
