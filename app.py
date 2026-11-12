@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -81,10 +80,8 @@ class RBIYieldFetcher:
     def get_page_text(html):
 
         parser = RBIYieldFetcher.AnchorParser()
-
         parser.feed(html)
 
-        # Remove HTML tags using standard HTML parser.
         class TextParser(HTMLParser):
 
             def __init__(self):
@@ -126,7 +123,6 @@ class RBIYieldFetcher:
         except ValueError:
             return None
 
-        # Extract the first YTM after the 91-Day section.
         section_match = re.search(
             r"91-Day.*?YTM\s*:\s*([0-9.]+)\s*%",
             text,
@@ -154,6 +150,7 @@ class RBIYieldFetcher:
     def get_latest_yield():
 
         session = requests.Session()
+
         session.headers.update(
             RBIYieldFetcher.HEADERS
         )
@@ -199,7 +196,6 @@ class RBIYieldFetcher:
                 "RBI Press Release मधून T-Bill Auction Result link मिळाली नाही."
             )
 
-        # Check latest available auction-result pages.
         for page_url in candidates[:15]:
 
             try:
@@ -216,7 +212,6 @@ class RBIYieldFetcher:
                 )
 
                 if result:
-
                     return result
 
             except requests.RequestException:
@@ -714,6 +709,7 @@ class NSEOptionChainFetcher:
                 pe.get("changeinOpenInterest")
             )
 
+            # Delta and Gamma use the editable risk-free rate.
             call_delta, call_gamma = BlackScholes.calculate(
 
                 spot=underlying_price,
@@ -821,11 +817,12 @@ class NSEOptionChainFetcher:
 
                     denominator = call_delta - put_delta
 
-                    if denominator != 0:
+                    if abs(denominator) > 1e-12:
 
                         df.loc[i, "Put_Rev"] = (
                             underlying_price
-                            - (
+                            -
+                            (
                                 (call_ltp - put_ltp)
                                 / denominator
                             )
@@ -854,11 +851,12 @@ class NSEOptionChainFetcher:
 
                     denominator = call_delta - put_delta
 
-                    if denominator != 0:
+                    if abs(denominator) > 1e-12:
 
                         df.loc[i, "Call_Rev"] = (
                             underlying_price
-                            - (
+                            -
+                            (
                                 (call_ltp - put_ltp)
                                 / denominator
                             )
@@ -945,8 +943,8 @@ def style_option_chain(df, spot_price):
 
         return styles
 
-    # Reversal columns will display whole numbers.
-    # All other columns retain two decimal places.
+    # Reversal columns display whole numbers.
+    # Calculations in the original dataframe retain full precision.
 
     format_dict = {}
 
@@ -1014,100 +1012,88 @@ show_debug = st.sidebar.checkbox(
 
 
 # ======================================================
-# AUTOMATIC RBI RATE
+# RBI RATE + EDITABLE RISK-FREE RATE
 # ======================================================
 
 st.sidebar.subheader(
     "Risk-Free Interest Rate"
 )
 
+# Fetch the latest RBI rate.
+# RBI result is cached for one hour.
+
 try:
 
     rbi_result = RBIYieldFetcher.get_latest_yield()
 
-    risk_free_rate_percent = rbi_result["rate"]
+    latest_rbi_rate = float(rbi_result["rate"])
+    latest_rbi_date = rbi_result["date"]
 
-    risk_free_rate_date = rbi_result["date"]
-
-    st.session_state["last_rbi_rate"] = (
-        risk_free_rate_percent
+    previous_rbi_date = st.session_state.get(
+        "last_applied_rbi_date"
     )
 
-    st.session_state["last_rbi_date"] = (
-        risk_free_rate_date
-    )
+    # Apply RBI rate only when a new auction date is found.
+    # Manual changes remain untouched during normal reruns.
 
-    st.session_state["rbi_rate_source"] = (
-        rbi_result["source"]
-    )
+    if previous_rbi_date != latest_rbi_date:
+
+        st.session_state["risk_free_rate_input"] = (
+            latest_rbi_rate
+        )
+
+        st.session_state["last_applied_rbi_date"] = (
+            latest_rbi_date
+        )
+
+    st.session_state["last_rbi_rate"] = latest_rbi_rate
+    st.session_state["last_rbi_date"] = latest_rbi_date
 
     st.session_state["rbi_rate_status"] = "live"
 
-except Exception as rbi_error:
+except Exception:
 
-    if "last_rbi_rate" in st.session_state:
+    # If RBI data is unavailable, retain the user's current
+    # selected rate. If this is the first run, use 6.50%.
 
-        risk_free_rate_percent = (
-            st.session_state["last_rbi_rate"]
-        )
+    if "risk_free_rate_input" not in st.session_state:
 
-        risk_free_rate_date = (
-            st.session_state["last_rbi_date"]
-        )
+        st.session_state["risk_free_rate_input"] = 6.50
 
-        st.session_state["rbi_rate_status"] = "cached"
+    st.session_state["rbi_rate_status"] = "fallback"
 
-    else:
 
-        # Temporary fallback only when no RBI rate
-        # has ever been retrieved in this session.
+# Create editable number input after initializing session state.
+# Do not use value= together with this key.
 
-        risk_free_rate_percent = 6.50
+risk_free_rate_percent = st.sidebar.number_input(
+    "Risk-Free Interest Rate (%)",
+    min_value=0.0,
+    max_value=20.0,
+    step=0.05,
+    format="%.4f",
+    key="risk_free_rate_input"
+)
 
-        risk_free_rate_date = None
-
-        st.session_state["rbi_rate_status"] = "fallback"
-
-        st.session_state["rbi_rate_error"] = str(
-            rbi_error
-        )
-
+# Convert percentage to decimal for Black-Scholes.
 
 risk_free_rate = risk_free_rate_percent / 100.0
 
-st.sidebar.metric(
-    "91-Day T-Bill Yield",
-    f"{risk_free_rate_percent:.4f}%"
+st.sidebar.caption(
+    "हा दर Delta, Gamma आणि Reversal गणनेसाठी वापरला जाईल."
 )
 
-if risk_free_rate_date:
+if st.session_state.get("last_rbi_date"):
 
     st.sidebar.caption(
-        f"RBI Auction Date: {risk_free_rate_date.strftime('%d-%m-%Y')}"
+        "Latest RBI Auction Date: "
+        + st.session_state["last_rbi_date"].strftime("%d-%m-%Y")
     )
 
-else:
+elif st.session_state.get("rbi_rate_status") == "fallback":
 
     st.sidebar.caption(
-        "RBI Rate Date: Not Available"
-    )
-
-if st.session_state["rbi_rate_status"] == "live":
-
-    st.sidebar.success(
-        "Latest available RBI rate loaded"
-    )
-
-elif st.session_state["rbi_rate_status"] == "cached":
-
-    st.sidebar.warning(
-        "RBI unavailable. Using previously fetched rate."
-    )
-
-else:
-
-    st.sidebar.error(
-        "RBI rate unavailable. Temporary fallback: 6.50%"
+        "RBI दर उपलब्ध नाही. Default Rate: 6.50%"
     )
 
 
@@ -1174,46 +1160,6 @@ try:
         "Calculated Option Sides",
         ce_valid_count + pe_valid_count
     )
-
-    # --------------------------------------------------
-    # RBI RATE INFORMATION
-    # --------------------------------------------------
-
-    r1, r2 = st.columns(2)
-
-    r1.metric(
-        "Risk-Free Rate",
-        f"{risk_free_rate_percent:.4f}%"
-    )
-
-    if risk_free_rate_date:
-
-        r2.metric(
-            "RBI Auction Date",
-            risk_free_rate_date.strftime("%d-%m-%Y")
-        )
-
-    else:
-
-        r2.metric(
-            "RBI Auction Date",
-            "Not Available"
-        )
-
-    if st.session_state["rbi_rate_status"] == "fallback":
-
-        st.warning(
-            "RBI कडून 91-Day T-Bill Yield मिळाला नाही. "
-            "त्यामुळे सध्या तात्पुरता 6.50% दर वापरला आहे. "
-            "हा अधिकृत RBI दर नाही."
-        )
-
-    elif st.session_state["rbi_rate_status"] == "cached":
-
-        st.info(
-            "RBI कनेक्शन उपलब्ध नसल्यामुळे आधी मिळालेला "
-            "शेवटचा दर वापरला जात आहे."
-        )
 
     # --------------------------------------------------
     # CALCULATION COUNTS
@@ -1334,18 +1280,18 @@ try:
         )
 
         st.write(
-            "Risk-Free Interest Rate:",
+            "Risk-Free Interest Rate Used:",
             f"{risk_free_rate_percent:.4f}%"
         )
 
         st.write(
-            "RBI Rate Date:",
-            risk_free_rate_date
+            "Risk-Free Rate Decimal:",
+            risk_free_rate
         )
 
         st.write(
             "RBI Rate Status:",
-            st.session_state["rbi_rate_status"]
+            st.session_state.get("rbi_rate_status", "unknown")
         )
 
         st.write(
