@@ -119,13 +119,35 @@ class NSEOptionChainFetcher:
         )
         return self._get_json(url)
 
-    def fetch_option_greeks(self, expiry):
-        url = (
-            f"{self.base_url}/api/NextApi/apiClient/OptionGreekApi"
-            f"?functionName=getOptionGreekTableData"
-            f"&symbol={self.symbol}&params=expiryDate={expiry}"
-        )
-        return self._get_json(url)
+def fetch_option_greeks(self, expiry):
+
+    url = (
+        f"{self.base_url}/api/NextApi/apiClient/OptionGreekApi"
+        f"?functionName=getOptionGreekTableData"
+        f"&symbol={self.symbol}&params=expiryDate={expiry}"
+    )
+
+    headers = {
+        "Referer": (
+            "https://www.nseindia.com/market-data/option-greek"
+        ),
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "X-Requested-With": "XMLHttpRequest"
+    }
+
+    response = self.session.get(
+        url,
+        headers=headers,
+        timeout=25
+    )
+
+    print("Greek API Status:", response.status_code)
+    print("Greek Content Type:", response.headers.get("Content-Type"))
+    print("Greek Response:", response.text[:500])
+
+    response.raise_for_status()
+
+    return response.json()
 
     def process_option_chain(self, option_raw, greek_raw, expiry):
         records_obj = option_raw.get("records", {})
