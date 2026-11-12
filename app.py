@@ -468,6 +468,7 @@ class NSEOptionChainFetcher:
         )
 
 
+
 # ============================================================
 # STREAMLIT DASHBOARD
 # ============================================================
@@ -543,7 +544,6 @@ try:
             "Greeks मिळाले नाहीत."
         )
 
-    
     # ---------------- DISPLAY TABLE ----------------
 
     display_df = df[[
@@ -639,8 +639,8 @@ try:
 
             strike = float(data.loc[idx, "SP"])
 
-            # ATM ROW
-            if strike == atm_strike:
+            # ATM - Entire Row Bold and Yellow
+            if np.isclose(strike, atm_strike):
 
                 styles.loc[idx, :] = (
                     "font-weight: bold; "
@@ -651,22 +651,30 @@ try:
 
                 # CALL ITM / OTM
                 if strike < spot_price:
-                    call_color = "#e8f5e9"  # Light Green - ITM
+
+                    call_color = "#e8f5e9"
+
                 else:
-                    call_color = "#e3f2fd"  # Light Blue - OTM
+
+                    call_color = "#e3f2fd"
 
                 # PUT ITM / OTM
                 if strike > spot_price:
-                    put_color = "#e8f5e9"   # Light Green - ITM
+
+                    put_color = "#e8f5e9"
+
                 else:
-                    put_color = "#e3f2fd"   # Light Blue - OTM
+
+                    put_color = "#e3f2fd"
 
                 for col in call_columns:
+
                     styles.loc[idx, col] = (
                         f"background-color: {call_color};"
                     )
 
                 for col in put_columns:
+
                     styles.loc[idx, col] = (
                         f"background-color: {put_color};"
                     )
@@ -694,13 +702,25 @@ try:
     }, na_rep="")
 
     st.dataframe(
-
         styled_df,
         use_container_width=True,
         hide_index=True
-
     )
 
+    st.caption(
+        "LTP, OI, Change in OI आणि IV हे Option Chain API मधून घेतले आहेत. "
+        "Delta आणि Gamma हे Option Greek API मधून घेतले आहेत."
+    )
+
+except Exception as e:
+
+    st.error(
+        "NSE डेटा मिळवताना अडचण आली. काही वेळाने पुन्हा प्रयत्न करा."
+    )
+
+    st.caption(
+        f"तांत्रिक तपशील: {e}"
+    )
 
 
 # ---------------- AUTO REFRESH ----------------
