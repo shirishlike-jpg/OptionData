@@ -14,48 +14,36 @@ st.set_page_config(
 
 
 class NSEOptionChainFetcher:
-
     def __init__(self, symbol="NIFTY"):
-
         self.symbol = symbol.upper()
         self.base_url = "https://www.nseindia.com"
 
+        # खऱ्या ब्राउझरसारखे संपूर्ण आणि अचूक हेडर्स
         self.headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            ),
-            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate",
-            "Referer": "https://www.nseindia.com/option-chain",
-            "X-Requested-With": "XMLHttpRequest",
-            "Connection": "keep-alive"
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Referer": "https://www.nseindia.com/"
         }
 
         self.session = requests.Session()
         self.session.headers.update(self.headers)
-
         self._init_cookies()
 
     def _init_cookies(self):
-
         try:
-            self.session.get(
-                self.base_url,
-                timeout=15
-            )
-
+            # सर्वप्रथम मुख्य होमपेजला भेट देऊन कुकीज सक्रिय करणे
+            self.session.get(self.base_url, timeout=15)
+            time.sleep(2)
+            # त्यानंतर थेट ऑप्शन चेन पेजला हिट करून सेशन पूर्ण ऑथेंटिकेट करणे
+            self.session.get(f"{self.base_url}/option-chain", timeout=15)
             time.sleep(1)
-
-            self.session.get(
-                f"{self.base_url}/option-chain",
-                timeout=15
-            )
-
-            time.sleep(1)
-
         except requests.RequestException:
             pass
 
