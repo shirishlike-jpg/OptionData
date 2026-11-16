@@ -1,0 +1,1 @@
+streamlit>=1.32.0\npandas>=2.0.0\nnumpy>=1.24.0\nrequests>=2.31.0\n
